@@ -22,4 +22,16 @@ describe('isNoise', () => {
   it('does not flag when duration is unknown (session still open)', () => {
     expect(isNoise({ durationSeconds: null, messageCount: null })).toBe(false);
   });
+
+  it('does not flag at exactly the duration threshold (60s is not short)', () => {
+    expect(isNoise({ durationSeconds: 60, messageCount: 0 })).toBe(false);
+  });
+
+  it('does not flag at exactly the message-count threshold (3 is not "very low")', () => {
+    expect(isNoise({ durationSeconds: 59, messageCount: 3 })).toBe(false);
+  });
+
+  it('flags just inside both thresholds (59s and 2 messages)', () => {
+    expect(isNoise({ durationSeconds: 59, messageCount: 2 })).toBe(true);
+  });
 });
