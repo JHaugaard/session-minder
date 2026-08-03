@@ -2,6 +2,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getSql } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { isNoise } from '../noise.js';
 
 const VALID_PLATFORMS = ['claude_code', 'hermes', 'kimi_code'] as const;
 type Platform = (typeof VALID_PLATFORMS)[number];
@@ -55,8 +56,40 @@ export function registerCaptureRoute(app: FastifyInstance): void {
         return;
       }
 
-      // 'end' event handled in Task 6
-      reply.code(501).send({ error: 'end event not yet implemented' });
+      // event === 'end'
+      const messageCount = body.message_count ?? null;
+
+      const [existing] = await sql<{ started_at: Date }[]>`
+        SELECT started_at FROM _sessionminder.sessions
+        WHERE platform = ${body.platform}
+          AND external_session_id = ${body.external_session_id}
+      `;
+
+      const durationSeconds = existing
+        ? (Date.now() - new Date(existing.started_at).getTime()) / 1000
+        : null;
+
+      const noiseFlag = isNoise({ durationSeconds, messageCount });
+
+      // Upsert, not plain UPDATE: if the start capture was missed (service
+      // down, machine offline), the end event still records the session
+      // instead of matching zero rows and vanishing (spec Data Model: "the
+      // end hook upserts"). In the missed-start case started_at is unknown,
+      // so it falls back to now() and durationSeconds stays null.
+      await sql`
+        INSERT INTO _sessionminder.sessions
+          (platform, external_session_id, host, started_at, ended_at,
+           message_count, noise_flag)
+        VALUES
+          (${body.platform}, ${body.external_session_id}, ${body.host},
+           now(), now(), ${messageCount}, ${noiseFlag})
+        ON CONFLICT (platform, external_session_id) DO UPDATE
+        SET ended_at = now(),
+            message_count = ${messageCount},
+            noise_flag = ${noiseFlag}
+      `;
+      reply.code(204).send();
+      return;
     }
   );
 }

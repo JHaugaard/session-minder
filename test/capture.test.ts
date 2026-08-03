@@ -95,3 +95,138 @@ describe('POST /api/sessions/capture — start event', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/sessions/capture — end event', () => {
+  beforeEach(() => {
+    mockSql.mockReset();
+    process.env.SESSION_MINDER_TOKEN = 'test-token-123';
+  });
+
+  it('upserts the row with ended_at, message_count, and noise_flag', async () => {
+    // Two sql calls: the started_at SELECT, then the upsert.
+    mockSql.mockResolvedValue([]);
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'hermes',
+        external_session_id: 'xyz-789',
+        event: 'end',
+        host: 'vps8-core',
+        message_count: 1,
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends the started_at SELECT as the first query', async () => {
+    mockSql.mockResolvedValue([]);
+
+    const app = buildServer();
+    await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'hermes',
+        external_session_id: 'xyz-789',
+        event: 'end',
+        host: 'vps8-core',
+        message_count: 1,
+      },
+    });
+
+    const [strings, ...values] = mockSql.mock.calls[0];
+    expect(strings.join('?')).toMatch(
+      /SELECT started_at FROM _sessionminder\.sessions/
+    );
+    expect(values).toEqual(['hermes', 'xyz-789']);
+  });
+
+  it('upserts via ON CONFLICT ... DO UPDATE without touching started_at, and computes noise_flag from duration', async () => {
+    // A fixed, explicit started_at well outside the noise window (120s ago),
+    // captured once so the test isn't sensitive to real-clock timing.
+    const fixedNow = Date.now();
+    const startedAt = new Date(fixedNow - 120_000);
+    mockSql.mockResolvedValueOnce([{ started_at: startedAt }]); // SELECT
+    mockSql.mockResolvedValueOnce([]); // UPSERT
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'hermes',
+        external_session_id: 'not-noise',
+        event: 'end',
+        host: 'vps8-core',
+        message_count: 5,
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+
+    const [strings, ...values] = mockSql.mock.calls[1];
+    const joined = strings.join('?');
+    expect(joined).toMatch(
+      /ON CONFLICT \(platform, external_session_id\) DO UPDATE/
+    );
+    // The SET clause must not reassign started_at — only the text after
+    // "DO UPDATE" is the SET clause, so isolate it before asserting.
+    const setClause = joined.split('DO UPDATE')[1];
+    expect(setClause).not.toMatch(/started_at/);
+
+    expect(values).toEqual([
+      'hermes',
+      'not-noise',
+      'vps8-core',
+      5,
+      false,
+      5,
+      false,
+    ]);
+  });
+
+  it('flags noise_flag = true for a short session even when message_count is null (Hermes case)', async () => {
+    // Fixed, explicit started_at 10s before a captured "now" — well inside
+    // the noise window and not derived from clock timing during the test.
+    const fixedNow = Date.now();
+    const startedAt = new Date(fixedNow - 10_000);
+    mockSql.mockResolvedValueOnce([{ started_at: startedAt }]); // SELECT
+    mockSql.mockResolvedValueOnce([]); // UPSERT
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'hermes',
+        external_session_id: 'noisy-1',
+        event: 'end',
+        host: 'vps8-core',
+        // message_count intentionally omitted — no platform's end-hook
+        // payload reliably carries one, and this must not veto the flag.
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+
+    const [, ...values] = mockSql.mock.calls[1];
+    expect(values).toEqual([
+      'hermes',
+      'noisy-1',
+      'vps8-core',
+      null,
+      true,
+      null,
+      true,
+    ]);
+  });
+});
