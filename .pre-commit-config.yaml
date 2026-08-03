@@ -1,0 +1,17 @@
+# Secret protection hooks - run `pre-commit install` after cloning
+repos:
+  # Block .env files from being committed (except .env.example)
+  - repo: local
+    hooks:
+      - id: block-env-files
+        name: Block .env files
+        entry: bash -c 'for f in "$@"; do case "$f" in .env.example) ;; .env*) echo "Blocked: $f - use .env.example for templates"; exit 1;; esac; done' --
+        language: system
+        files: '^\.env'
+        stages: [pre-commit]
+
+  # Scan for leaked secrets using gitleaks
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
