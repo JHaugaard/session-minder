@@ -28,7 +28,7 @@ body="$(jq -n --arg sid "$session_id" --arg host "$host" --arg cwd "$cwd" \
   '{platform: "claude_code", external_session_id: $sid, event: "start", host: $host}
    + (if $cwd == "" then {} else {project_path: $cwd} end)')"
 
-curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/capture" \
+setsid curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/capture" \
   -H "Authorization: Bearer ${SESSION_MINDER_TOKEN:-}" \
   -H "Content-Type: application/json" \
   -d "$body" \

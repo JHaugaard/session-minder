@@ -16,6 +16,12 @@ Environment=HOST=100.118.195.63
 # This form pins Node v24.18.0 with no PATH dependency and no npm layer.
 ExecStart=/snap/bin/node /home/john/dev/active/session-minder/node_modules/tsx/dist/cli.mjs src/index.ts
 Restart=on-failure
+# If tailscaled hasn't assigned the bound IP yet at boot, app.listen fails
+# with EADDRNOTAVAIL and the process exits(1). The default RestartSec=100ms
+# would burn StartLimitBurst=5 within the default 10s StartLimitIntervalSec
+# and land the unit in `failed`. Give the interface time to come up between
+# attempts instead.
+RestartSec=5
 User=john
 
 [Install]

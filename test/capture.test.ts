@@ -122,6 +122,21 @@ describe('POST /api/sessions/capture — end event', () => {
 
     expect(res.statusCode).toBe(204);
     expect(mockSql).toHaveBeenCalledTimes(2);
+
+    // The started_at SELECT resolved to [] above, so `existing` is
+    // undefined, durationSeconds is null, and the missed-start path in
+    // isNoise must not flag this as noise (null duration → noise_flag
+    // false), regardless of message_count.
+    const [, ...upsertValues] = mockSql.mock.calls[1];
+    expect(upsertValues).toEqual([
+      'hermes',
+      'xyz-789',
+      'vps8-core',
+      1,
+      false,
+      1,
+      false,
+    ]);
   });
 
   it('sends the started_at SELECT as the first query', async () => {
@@ -181,6 +196,14 @@ describe('POST /api/sessions/capture — end event', () => {
     // "DO UPDATE" is the SET clause, so isolate it before asserting.
     const setClause = joined.split('DO UPDATE')[1];
     expect(setClause).not.toMatch(/started_at/);
+    // message_count must be COALESCEd against the existing row, not
+    // overwritten unconditionally — an end event without a count (no hook
+    // sends one today) must not erase a count an earlier event recorded.
+    // The interpolated value is identical either way, so only the SQL text
+    // can distinguish this from a plain assignment.
+    expect(setClause).toMatch(
+      /message_count = COALESCE\(\?, _sessionminder\.sessions\.message_count\)/
+    );
 
     expect(values).toEqual([
       'hermes',

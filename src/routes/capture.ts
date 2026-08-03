@@ -85,7 +85,7 @@ export function registerCaptureRoute(app: FastifyInstance): void {
            now(), now(), ${messageCount}, ${noiseFlag})
         ON CONFLICT (platform, external_session_id) DO UPDATE
         SET ended_at = now(),
-            message_count = ${messageCount},
+            message_count = COALESCE(${messageCount}, _sessionminder.sessions.message_count),
             noise_flag = ${noiseFlag}
       `;
       reply.code(204).send();

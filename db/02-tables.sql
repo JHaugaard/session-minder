@@ -10,6 +10,10 @@ CREATE TABLE _sessionminder.sessions (
     external_session_id text NOT NULL,
     host                text NOT NULL,
     project_path        text,
+    -- If started_at = ended_at exactly, the start event never arrived (the
+    -- end-event upsert's INSERT branch stamps both with the same now()).
+    -- Treat that as "true duration unknown," not as a genuine zero-second
+    -- session.
     started_at          timestamptz NOT NULL,
     ended_at            timestamptz,
     message_count       integer,
