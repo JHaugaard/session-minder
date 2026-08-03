@@ -1,0 +1,22 @@
+[Unit]
+Description=session-minder capture API
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/john/dev/active/session-minder
+EnvironmentFile=/home/john/dev/active/session-minder/.env.local
+# Bind the tailnet IP directly — hooks call http://vps8-core:3000 over the
+# tailnet. Never 0.0.0.0 (spec: tailnet-only, Non-Goals).
+Environment=HOST=100.118.195.63
+# Invoke node and tsx's CLI directly rather than via npx. systemd's default
+# PATH finds /usr/bin/node (v18.19.1), so both `/usr/bin/npx tsx` and
+# `/snap/bin/npx tsx` would run this service on Node 18 — below the project's
+# Node 20+ requirement, and a version npm itself warns is unsupported.
+# This form pins Node v24.18.0 with no PATH dependency and no npm layer.
+ExecStart=/snap/bin/node /home/john/dev/active/session-minder/node_modules/tsx/dist/cli.mjs src/index.ts
+Restart=on-failure
+User=john
+
+[Install]
+WantedBy=multi-user.target
