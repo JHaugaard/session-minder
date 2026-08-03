@@ -2,6 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Execution record (completed 2026-08-03)
+
+All ten tasks executed and committed; `74944ac..8c0e396` is on `origin/main`. Steps are ticked below,
+each annotated where reality diverged from the text. Conventions:
+
+- `- [x]` with no note — done exactly as written.
+- `↳ DEVIATION:` — done differently, and why. Every deviation was ruled on by the human before it was applied.
+- `↳ DONE BY JOHN:` — executed by the human (sudo, superuser psql, or a live-daemon restart).
+- `↳ SKIPPED:` — not done, and why. Exactly one step (Task 9, Step 5).
+
+**Two places this plan was factually wrong**, both caught at implementation time: Task 8's Hermes YAML
+schema, and Task 10's `ExecStart` (both npx forms resolve Node to v18.19.1 under systemd). See those steps.
+
+**A pattern worth carrying into Phase 2:** every task's review found the plan's specified tests asserted
+that *something happened* rather than pinning the behavior the spec singles out. `ON CONFLICT DO NOTHING`
+and the platform allowlist could both be deleted with the plan's tests still green. Four extra commits
+exist solely to close that gap.
+
+Full run detail — reviews, fix rounds, adjudications — is in the gitignored SDD ledger at
+`.superpowers/sdd/2026-08-03-session-minder-phase1-capture-platform/progress.md`.
+
+---
+
 **Goal:** Stand up the automatic, hook-driven capture pipeline (Postgres schema + ingest API + per-platform hook scripts) that replaces the three manual Markdown session indexes with one source of truth — no dashboard yet.
 
 **Architecture:** A small Fastify + TypeScript service exposes one bearer-token-authed endpoint, `POST /api/sessions/capture`. Claude Code, Hermes, and Kimi Code each get a pair of thin shell hook scripts (session-start, session-end) that read the platform's own JSON-on-stdin hook payload and re-POST the relevant fields to that endpoint. The service is the only thing that touches Postgres, per the project's ownership convention. No UI in this phase — the deliverable is verified via `curl` and automated tests, not a browser.
@@ -31,13 +54,14 @@
 **Interfaces:**
 - Produces: table `_sessionminder.sessions` with columns exactly as listed below — every later task's SQL and TypeScript types depend on this shape.
 
-- [ ] **Step 1: Generate a role password**
+- [x] **Step 1: Generate a role password**  
+      ↳ DEVIATION: used `openssl rand -hex 32`, not `base64 24` — base64 can emit `/`, which breaks the `postgresql://` URL.
 
 Run: `openssl rand -base64 24`
 
 Save the output somewhere safe (e.g. a password manager) — it goes into `DATABASE_URL` in Task 2 and is substituted into the SQL below. Do not commit it.
 
-- [ ] **Step 2: Write `db/01-role-and-schema.sql`**
+- [x] **Step 2: Write `db/01-role-and-schema.sql`**
 
 ```sql
 -- db/01-role-and-schema.sql
@@ -49,7 +73,8 @@ CREATE ROLE _sessionminder_role LOGIN PASSWORD 'REPLACE_WITH_GENERATED_PASSWORD'
 CREATE SCHEMA IF NOT EXISTS _sessionminder AUTHORIZATION _sessionminder_role;
 ```
 
-- [ ] **Step 3: Write `db/02-tables.sql`**
+- [x] **Step 3: Write `db/02-tables.sql`**  
+      ↳ Later amended (commit 3d861e3) with a comment documenting the `started_at = ended_at` missed-start invariant.
 
 ```sql
 -- db/02-tables.sql
@@ -90,7 +115,8 @@ CREATE TRIGGER sessions_set_updated_at
     FOR EACH ROW EXECUTE FUNCTION _sessionminder.set_updated_at();
 ```
 
-- [ ] **Step 4: pg_hba grant for the new role**
+- [x] **Step 4: pg_hba grant for the new role**  
+      ↳ DONE BY JOHN (sudo).
 
 Tailnet access to Postgres is network-open but per-role-authed (`~/.claude/rules/infrastructure.md`): the new role needs its own `pg_hba.conf` entry before it can connect at all. The API runs on vps8 and reaches Postgres at `vps8-core:5433`, so the connection originates from vps8's own tailnet IP:
 
@@ -100,7 +126,8 @@ host  postgres  _sessionminder_role  100.118.195.63/32  scram-sha-256
 
 Add that line to `pg_hba.conf`, then `sudo systemctl reload postgresql` (reload, not restart). Without it, Step 5's second command fails with `no pg_hba.conf entry`.
 
-- [ ] **Step 5: Apply — two invocations, two roles**
+- [x] **Step 5: Apply — two invocations, two roles**  
+      ↳ DONE BY JOHN (superuser). The first `CREATE ROLE` never landed — role query returned 0 rows — and was re-run via `sudo -u postgres` with `ALTER ROLE`.
 
 Substitute the generated password into `REPLACE_WITH_GENERATED_PASSWORD` in the role file and the connection string below, then:
 
@@ -114,7 +141,8 @@ psql "postgresql://_sessionminder_role:REPLACE_WITH_GENERATED_PASSWORD@vps8-core
 
 (Adjust the superuser connection to however you normally reach that role on vps8-core's Postgres — this plan assumes the standard shared-instance setup documented in `~/.claude/rules/database-conventions.md`.)
 
-- [ ] **Step 6: Verify — shape AND ownership**
+- [x] **Step 6: Verify — shape AND ownership**  
+      ↳ Verified: columns match, Owner reads `_sessionminder_role`.
 
 ```bash
 psql "postgresql://_sessionminder_role:REPLACE_WITH_GENERATED_PASSWORD@vps8-core:5433/postgres" \
@@ -123,7 +151,8 @@ psql "postgresql://_sessionminder_role:REPLACE_WITH_GENERATED_PASSWORD@vps8-core
 
 Expected: column list matches Step 3 exactly, and the `\dt` **Owner column reads `_sessionminder_role`**. If it reads `postgres`, stop — fix with `ALTER TABLE _sessionminder.sessions OWNER TO _sessionminder_role` before continuing (this is the `_foundry` ownership trap; see the audit runbook referenced in `~/.claude/rules/database-conventions.md`).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**  
+      ↳ ccbe26c
 
 ```bash
 git add db/01-role-and-schema.sql db/02-tables.sql
@@ -146,7 +175,8 @@ git commit -m "feat: add sessions table schema"
 **Interfaces:**
 - Produces: `buildServer(): FastifyInstance` (exported from `src/server.ts`) — every later route task registers routes on the instance this factory returns, and every later test calls this same factory.
 
-- [ ] **Step 1: Write `package.json`**
+- [x] **Step 1: Write `package.json`**  
+      ↳ Later gained `engines: node >=20` (commit 89b500c).
 
 ```json
 {
@@ -173,7 +203,7 @@ git commit -m "feat: add sessions table schema"
 }
 ```
 
-- [ ] **Step 2: Write `tsconfig.json`**
+- [x] **Step 2: Write `tsconfig.json`**
 
 ```json
 {
@@ -190,11 +220,11 @@ git commit -m "feat: add sessions table schema"
 }
 ```
 
-- [ ] **Step 3: Install dependencies**
+- [x] **Step 3: Install dependencies**
 
 Run: `npm install`
 
-- [ ] **Step 4: Write the failing test**
+- [x] **Step 4: Write the failing test**
 
 ```typescript
 // test/server.test.ts
@@ -211,12 +241,14 @@ describe('GET /healthz', () => {
 });
 ```
 
-- [ ] **Step 5: Run test to verify it fails**
+- [x] **Step 5: Run test to verify it fails**  
+      ↳ RED confirmed.
 
 Run: `npx vitest run test/server.test.ts`
 Expected: FAIL — `Cannot find module '../src/server.js'` (file doesn't exist yet)
 
-- [ ] **Step 6: Write `src/server.ts`**
+- [x] **Step 6: Write `src/server.ts`**  
+      ↳ DEVIATION: `logger: process.env.NODE_ENV !== 'test'` instead of `logger: true` — the plan's form put pino JSON in every test's output.
 
 ```typescript
 // src/server.ts
@@ -231,7 +263,7 @@ export function buildServer(): FastifyInstance {
 }
 ```
 
-- [ ] **Step 7: Write `src/index.ts`**
+- [x] **Step 7: Write `src/index.ts`**
 
 ```typescript
 // src/index.ts
@@ -250,12 +282,14 @@ app.listen({ port, host }).catch((err) => {
 });
 ```
 
-- [ ] **Step 8: Run test to verify it passes**
+- [x] **Step 8: Run test to verify it passes**  
+      ↳ GREEN confirmed.
 
 Run: `npx vitest run test/server.test.ts`
 Expected: PASS
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**  
+      ↳ DEVIATION: commit amended to 867abc1 to include `package-lock.json`, which the plan's `git add` list omitted.
 
 ```bash
 git add package.json tsconfig.json src/server.ts src/index.ts test/server.test.ts
@@ -275,7 +309,8 @@ git commit -m "feat: scaffold fastify service with health check"
 - Consumes: `process.env.DATABASE_URL`
 - Produces: `getSql(): Sql` (named export from `src/db.ts`, lazily initialized — importing the module never throws; only calling `getSql()` without `DATABASE_URL` does, so tests that mock or never touch the db stay independent of env). Used by the capture route in Task 5/6. `isNoise(input: { durationSeconds: number | null; messageCount: number | null }): boolean` (exported from `src/noise.ts`) — used by the capture route in Task 6.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**  
+      ↳ Later extended with 3 boundary assertions (09fc3ba) — the plan's 5 cases pinned neither threshold constant nor either comparison operator.
 
 ```typescript
 // test/noise.test.ts
@@ -305,12 +340,13 @@ describe('isNoise', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**  
+      ↳ RED confirmed.
 
 Run: `npx vitest run test/noise.test.ts`
 Expected: FAIL — `Cannot find module '../src/noise.js'`
 
-- [ ] **Step 3: Write `src/noise.ts`**
+- [x] **Step 3: Write `src/noise.ts`**
 
 ```typescript
 // src/noise.ts
@@ -333,12 +369,13 @@ export function isNoise(input: {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**  
+      ↳ GREEN confirmed.
 
 Run: `npx vitest run test/noise.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Write `src/db.ts`**
+- [x] **Step 5: Write `src/db.ts`**
 
 ```typescript
 // src/db.ts
@@ -360,7 +397,8 @@ export function getSql(): Sql {
 }
 ```
 
-- [ ] **Step 6: Add `.env.local` entries**
+- [x] **Step 6: Add `.env.local` entries**  
+      ↳ DEVIATION: done by the controller in the main session, not the implementer, to keep live secrets out of subagent context. `DATABASE_URL` was written at Task 1 — it is the only file the password touches.
 
 Add to `.env.local` (already gitignored per `/project-setup`):
 
@@ -374,7 +412,8 @@ PORT=3000
 
 Generate the token: `openssl rand -hex 32`, paste into `SESSION_MINDER_TOKEN=`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**  
+      ↳ 0e6c1ae, plus follow-up 09fc3ba adding `test/db.test.ts`, which pins the lazy-init contract the plan left unverified.
 
 ```bash
 git add src/db.ts src/noise.ts test/noise.test.ts
@@ -395,7 +434,8 @@ git commit -m "feat: add db client and noise-flag threshold logic"
 - Consumes: `process.env.SESSION_MINDER_TOKEN`
 - Produces: `requireAuth(request: FastifyRequest, reply: FastifyReply): Promise<void>` (exported from `src/auth.ts`) — registered as a Fastify `preHandler` on the capture route in Task 5.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**  
+      ↳ Later extended (554b5da) to cover the fail-closed invariant and to assert the 401 body, which the plan's 3 cases left unpinned.
 
 ```typescript
 // test/auth.test.ts
@@ -443,12 +483,13 @@ describe('requireAuth', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**  
+      ↳ RED confirmed.
 
 Run: `npx vitest run test/auth.test.ts`
 Expected: FAIL — `Cannot find module '../src/auth.js'`
 
-- [ ] **Step 3: Write `src/auth.ts`**
+- [x] **Step 3: Write `src/auth.ts`**
 
 ```typescript
 // src/auth.ts
@@ -468,12 +509,14 @@ export async function requireAuth(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**  
+      ↳ GREEN confirmed.
 
 Run: `npx vitest run test/auth.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**  
+      ↳ eaa8a9d, plus 554b5da.
 
 ```bash
 git add src/auth.ts test/auth.test.ts
@@ -493,7 +536,8 @@ git commit -m "feat: add bearer token auth guard"
 - Consumes: `getSql` from `src/db.ts` (Task 3), `requireAuth` from `src/auth.ts` (Task 4)
 - Produces: `registerCaptureRoute(app: FastifyInstance): void` (exported from `src/routes/capture.ts`) — called from `buildServer()` in `src/server.ts`. Route contract: `POST /api/sessions/capture` body `{ platform: 'claude_code'|'hermes'|'kimi_code', external_session_id: string, event: 'start'|'end', host: string, project_path?: string, message_count?: number }`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**  
+      ↳ Later extended (636164b): the plan's malformed-payload case failed validation before the allowlist check, so deleting the allowlist passed all 3 tests.
 
 ```typescript
 // test/capture.test.ts
@@ -562,12 +606,13 @@ describe('POST /api/sessions/capture — start event', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**  
+      ↳ RED confirmed (404s where 401/204/400 expected).
 
 Run: `npx vitest run test/capture.test.ts`
 Expected: FAIL — the route isn't registered yet, so every request returns 404 where the tests expect 401/204/400
 
-- [ ] **Step 3: Write `src/routes/capture.ts`** (start-event handling only; end-event added in Task 6)
+- [x] **Step 3: Write `src/routes/capture.ts`** (start-event handling only; end-event added in Task 6)
 
 ```typescript
 // src/routes/capture.ts
@@ -634,7 +679,8 @@ export function registerCaptureRoute(app: FastifyInstance): void {
 }
 ```
 
-- [ ] **Step 4: Wire it into `src/server.ts`**
+- [x] **Step 4: Wire it into `src/server.ts`**  
+      ↳ DEVIATION: kept the Task 2 `NODE_ENV` logger gate rather than restoring the plan's literal `logger: true`.
 
 ```typescript
 // src/server.ts
@@ -651,12 +697,14 @@ export function buildServer(): FastifyInstance {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**  
+      ↳ GREEN confirmed.
 
 Run: `npx vitest run test/capture.test.ts`
 Expected: PASS (all three cases)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**  
+      ↳ 72870fd, plus 636164b pinning the `ON CONFLICT` clause and the platform allowlist.
 
 ```bash
 git add src/routes/capture.ts src/server.ts test/capture.test.ts
@@ -675,7 +723,8 @@ git commit -m "feat: add capture endpoint start-event handling"
 - Consumes: `isNoise` from `src/noise.ts` (Task 3)
 - Produces: full `event: 'end'` handling on the same route from Task 5.
 
-- [ ] **Step 1: Add the failing tests**
+- [x] **Step 1: Add the failing tests**  
+      ↳ Extended beyond the plan's single case to pin `DO UPDATE`, that `SET` never touches `started_at`, and the null-`message_count` Hermes case.
 
 Append to `test/capture.test.ts`:
 
@@ -710,12 +759,14 @@ describe('POST /api/sessions/capture — end event', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**  
+      ↳ RED confirmed (501 for `end`).
 
 Run: `npx vitest run test/capture.test.ts`
 Expected: FAIL — current handler returns 501 for `end`
 
-- [ ] **Step 3: Implement end-event handling in `src/routes/capture.ts`**
+- [x] **Step 3: Implement end-event handling in `src/routes/capture.ts`**  
+      ↳ Later hardened (3d861e3): `message_count = COALESCE(...)` so a repeat end event cannot null out a recorded count.
 
 Replace the `// 'end' event handled in Task 6` block with:
 
@@ -762,12 +813,14 @@ Add the import at the top of the file:
 import { isNoise } from '../noise.js';
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**  
+      ↳ GREEN confirmed.
 
 Run: `npx vitest run test/capture.test.ts`
 Expected: PASS (all four cases)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**  
+      ↳ 018c27b
 
 ```bash
 git add src/routes/capture.ts test/capture.test.ts
@@ -786,7 +839,8 @@ git commit -m "feat: add capture endpoint end-event handling with noise-flag cal
 **Interfaces:**
 - Consumes: `POST /api/sessions/capture` (Tasks 5–6), reads `SESSION_MINDER_URL` and `SESSION_MINDER_TOKEN` from the environment (set in the shell profile or `~/.claude/settings.json` env block on whatever machine the hook runs on — not from this repo's `.env.local`, since Claude Code hooks run outside this project's process). Scripts require `jq` (`apt`/`brew install jq` if a machine lacks it).
 
-- [ ] **Step 1: Write `hooks/claude-code/session-start.sh`**
+- [x] **Step 1: Write `hooks/claude-code/session-start.sh`**  
+      ↳ DEVIATION: `host` derived from the Tailscale short name, not `$(hostname)` — vps8's hostname is `srv1086450`. Later gained `setsid` and a token fallback.
 
 ```bash
 #!/usr/bin/env bash
@@ -817,7 +871,8 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 2: Write `hooks/claude-code/session-end.sh`**
+- [x] **Step 2: Write `hooks/claude-code/session-end.sh`**  
+      ↳ Same deviations as Step 1.
 
 ```bash
 #!/usr/bin/env bash
@@ -845,13 +900,14 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 3: Make them executable**
+- [x] **Step 3: Make them executable**
 
 ```bash
 chmod +x hooks/claude-code/session-start.sh hooks/claude-code/session-end.sh
 ```
 
-- [ ] **Step 4: Wire into `~/.claude/settings.json` — user-level, on every machine Claude Code runs on**
+- [x] **Step 4: Wire into `~/.claude/settings.json` — user-level, on every machine Claude Code runs on**  
+      ↳ Registered user-level on vps8 only — the sole machine running Claude Code, so the plan's per-machine note does not apply. Merged programmatically; existing `PostToolUse` hook preserved.
 
 **Not this repo's `.claude/settings.json`**: project-level hooks fire only for sessions started inside this one repo, and the spec requires capturing *every* session. Register user-level on each machine (vps8 now; mbp/mini when their hook environments are set up), merging with any existing content — don't overwrite other keys:
 
@@ -888,7 +944,8 @@ Notes:
 - The script path above is the vps8 checkout; on other machines, point at a local copy of the scripts.
 - This is Claude Code's own settings.json hook config format; confirm against current Claude Code docs at implementation time in case the schema has moved.
 
-- [ ] **Step 5: Manual verification**
+- [x] **Step 5: Manual verification**  
+      ↳ VERIFIED on a real session: `d4a3cfd8-…`, start and end, 505s, correctly not flagged noise.
 
 Set `SESSION_MINDER_URL` and `SESSION_MINDER_TOKEN` in your shell profile (matching the token generated in Task 3, Step 6), start the service (`npm run dev` from Task 2), open a fresh Claude Code session in any repo, then check:
 
@@ -898,7 +955,8 @@ psql "$DATABASE_URL" -c "SELECT platform, external_session_id, started_at, ended
 
 Expected: a row with `platform = claude_code`, a recent `started_at`, and `ended_at` NULL. Then exit that session and re-run the query — `ended_at` should now be set.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**  
+      ↳ 93ff072
 
 ```bash
 git add hooks/claude-code/session-start.sh hooks/claude-code/session-end.sh
@@ -919,7 +977,8 @@ git commit -m "feat: add Claude Code session capture hooks"
 **Interfaces:**
 - Consumes: `POST /api/sessions/capture` (Tasks 5–6)
 
-- [ ] **Step 1: Write `hooks/hermes/session-start.sh`**
+- [x] **Step 1: Write `hooks/hermes/session-start.sh`**  
+      ↳ DEVIATION: sends `project_path` from the payload's `cwd`, which the plan omitted — the spec assumed Hermes had no cwd, but it does.
 
 ```bash
 #!/usr/bin/env bash
@@ -945,7 +1004,8 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 2: Write `hooks/hermes/session-end.sh`**
+- [x] **Step 2: Write `hooks/hermes/session-end.sh`**  
+      ↳ DEVIATION: Tailscale host derivation.
 
 ```bash
 #!/usr/bin/env bash
@@ -970,13 +1030,14 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 3: Make them executable**
+- [x] **Step 3: Make them executable**
 
 ```bash
 chmod +x hooks/hermes/session-start.sh hooks/hermes/session-end.sh
 ```
 
-- [ ] **Step 4: Wire into `~/.hermes/config.yaml`**
+- [x] **Step 4: Wire into `~/.hermes/config.yaml`**  
+      ↳ DEVIATION — THE PLAN'S SCHEMA WAS WRONG. Hermes takes `hooks:` as a mapping keyed by event name, not a flat list of `{event, command}`. Also wired the 3 running profile gateways (`mccoy`, `vulcan`, `the-beav`), each of which has its own `config.yaml` and `.env` under its own `HERMES_HOME`.
 
 Add under the `hooks:` block (merge with existing config — do not overwrite other hook entries):
 
@@ -990,7 +1051,8 @@ hooks:
 
 Note: first invocation of each (event, command) pair will prompt for consent, recorded in `~/.hermes/shell-hooks-allowlist.json` — approve it once, interactively, the first time each hook fires.
 
-- [ ] **Step 5: Manual verification**
+- [x] **Step 5: Manual verification**  
+      ↳ VERIFIED on real sessions across all 4 wired profiles.
 
 With the service running and `SESSION_MINDER_URL`/`SESSION_MINDER_TOKEN` set in the environment Hermes runs in, start a Hermes session, approve the consent prompts, then check:
 
@@ -1000,7 +1062,8 @@ psql "$DATABASE_URL" -c "SELECT platform, external_session_id, started_at FROM _
 
 Expected: a row with `platform = hermes` and a recent `started_at`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**  
+      ↳ 62f90af
 
 ```bash
 git add hooks/hermes/session-start.sh hooks/hermes/session-end.sh
@@ -1021,7 +1084,8 @@ git commit -m "feat: add Hermes session capture hooks"
 **Interfaces:**
 - Consumes: `POST /api/sessions/capture` (Tasks 5–6)
 
-- [ ] **Step 1: Write `hooks/kimi-code/session-start.sh`**
+- [x] **Step 1: Write `hooks/kimi-code/session-start.sh`**  
+      ↳ Same deviations as the Claude Code hooks (Tailscale host, `setsid`, token fallback).
 
 ```bash
 #!/usr/bin/env bash
@@ -1050,7 +1114,8 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 2: Write `hooks/kimi-code/session-end.sh`**
+- [x] **Step 2: Write `hooks/kimi-code/session-end.sh`**  
+      ↳ Same.
 
 ```bash
 #!/usr/bin/env bash
@@ -1075,13 +1140,14 @@ curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/
 exit 0
 ```
 
-- [ ] **Step 3: Make them executable**
+- [x] **Step 3: Make them executable**
 
 ```bash
 chmod +x hooks/kimi-code/session-start.sh hooks/kimi-code/session-end.sh
 ```
 
-- [ ] **Step 4: Wire into `~/.kimi-code/config.toml`**
+- [x] **Step 4: Wire into `~/.kimi-code/config.toml`**  
+      ↳ Plan's TOML schema confirmed correct. Asserted only the 4 legal fields are used — extra fields make Kimi fail to load the config.
 
 Add (merge with any existing `[[hooks]]` entries):
 
@@ -1097,11 +1163,13 @@ matcher = "exit"
 command = "/home/john/dev/active/session-minder/hooks/kimi-code/session-end.sh"
 ```
 
-- [ ] **Step 5: Manual verification**
+- [ ] **Step 5: Manual verification**  
+      ↳ SKIPPED — deferred by explicit instruction until Kimi Code is brought online. Scripts are verified at the script level; the token now resolves from `.env.local`, since Kimi has no environment mechanism.
 
 Deferred until Kimi Code is actually brought online for project use (spec: Open Question #2) — this step is a placeholder for that future session, not something to run now. When run: start a fresh Kimi Code session, then check for a `platform = kimi_code` row the same way as Steps 5 in Tasks 7 and 8.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**  
+      ↳ bb8526a
 
 ```bash
 git add hooks/kimi-code/session-start.sh hooks/kimi-code/session-end.sh
@@ -1120,7 +1188,8 @@ git commit -m "feat: add Kimi Code session capture hooks"
 
 No reverse-proxy layer: the hook scripts already call `http://vps8-core:3000` directly, so the service binds the tailnet IP itself and UFW opens port 3000 on `tailscale0` only — one moving part fewer than a Caddy hostname, which can be layered on later if ever wanted.
 
-- [ ] **Step 1: Write `deploy/session-minder.service`**
+- [x] **Step 1: Write `deploy/session-minder.service`**  
+      ↳ DEVIATION: `ExecStart` is `/snap/bin/node .../tsx/dist/cli.mjs`, not `npx tsx` — BOTH npx forms resolve Node to v18.19.1 under systemd, below this project's Node 20+ requirement. Later gained `RestartSec=5` (3d861e3) to survive a tailscaled boot race.
 
 ```ini
 [Unit]
@@ -1144,7 +1213,8 @@ WantedBy=multi-user.target
 
 (If `npx` isn't at `/usr/bin/npx` — e.g. node via nvm — set `ExecStart` to the path `which npx` reports.)
 
-- [ ] **Step 2: Open port 3000 on the tailnet interface only**
+- [x] **Step 2: Open port 3000 on the tailnet interface only**  
+      ↳ DONE BY JOHN (sudo).
 
 Match the existing Postgres-on-tailnet UFW pattern (`~/.claude/rules/infrastructure.md`):
 
@@ -1154,7 +1224,8 @@ sudo ufw allow in on tailscale0 to any port 3000 proto tcp
 
 No public-interface rule — the tailnet bind plus the tailscale0-only UFW rule together keep the service invisible from the internet.
 
-- [ ] **Step 3: Install and start the service**
+- [x] **Step 3: Install and start the service**  
+      ↳ DONE BY JOHN (sudo). Verified `active (running)`, enabled, bound to the tailnet IP only.
 
 ```bash
 sudo cp deploy/session-minder.service /etc/systemd/system/
@@ -1165,7 +1236,8 @@ sudo systemctl status session-minder
 
 Expected: `active (running)`.
 
-- [ ] **Step 4: Smoke test — reachable from the tailnet, invisible from the internet**
+- [x] **Step 4: Smoke test — reachable from the tailnet, invisible from the internet**  
+      ↳ Same-host checks pass: tailnet IP and MagicDNS reachable, loopback refuses, public IP unreachable. The cross-tailnet leg from mbp/mini was N/A — vps8 is the only machine running these tools.
 
 From another tailnet machine (e.g. mbp):
 
@@ -1183,7 +1255,8 @@ curl -s -m 3 http://72.60.27.146:3000/healthz || echo "publicly unreachable — 
 
 Expected: the fallback message, not a healthz response.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**  
+      ↳ 0b0196e
 
 ```bash
 git add deploy/session-minder.service
