@@ -28,6 +28,7 @@ describe('POST /api/sessions/capture — start event', () => {
       },
     });
     expect(res.statusCode).toBe(401);
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   it('inserts a new row on a start event', async () => {
@@ -49,6 +50,21 @@ describe('POST /api/sessions/capture — start event', () => {
 
     expect(res.statusCode).toBe(204);
     expect(mockSql).toHaveBeenCalledOnce();
+
+    // Pin the idempotent-insert behavior itself, not just "some query ran":
+    // mockSql is invoked as a tagged template, so calls[0][0] is the
+    // template-strings array and calls[0].slice(1) is the interpolated
+    // values in order.
+    const [strings, ...values] = mockSql.mock.calls[0];
+    expect(strings.join('?')).toMatch(
+      /ON CONFLICT \(platform, external_session_id\) DO NOTHING/
+    );
+    expect(values).toEqual([
+      'claude_code',
+      'abc-123',
+      'mbp',
+      '/home/john/dev/active/session-minder',
+    ]);
   });
 
   it('rejects a malformed payload', async () => {
@@ -60,5 +76,22 @@ describe('POST /api/sessions/capture — start event', () => {
       payload: { platform: 'not-a-real-platform', event: 'start' },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects an otherwise-valid payload with an unrecognized platform', async () => {
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'not-a-real-platform',
+        external_session_id: 'abc-123',
+        event: 'start',
+        host: 'mbp',
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
   });
 });
