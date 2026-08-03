@@ -8,20 +8,20 @@ Outcomes: user can list/search sessions across all three tools from one place; u
 </intent>
 
 <stack>
-- runtime: TBD
-- framework: TBD
-- database: TBD
-- deploy: TBD
+- runtime: Node.js 20+ with `tsx`
+- framework: Fastify 4
+- database: Postgres, schema `_sessionminder` on `vps8-core:5433`
+- deploy: systemd unit on vps8, tailnet-only (see `deploy/session-minder.service`)
 </stack>
 
 <commands>
 
 | Task | Command |
 |------|---------|
-| Dev | |
-| Test | |
-| Lint | |
-| Build | |
+| Dev | `npm run dev` |
+| Test | `npm test` |
+| Lint | — |
+| Build | — (the service runs from source via `tsx`) |
 | Pre-commit | `pre-commit run --all-files` |
 
 </commands>
