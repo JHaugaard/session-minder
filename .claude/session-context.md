@@ -1,35 +1,61 @@
 # Session Context
 
 ## Current Focus
-session-minder-brainstorm — run the brainstorm skill to flesh out the session-minder idea and work toward a prompt. session-minder is a single-user tool to track and access sessions across Claude Code, Hermes Agent, and Kimi Code.
+
+Push session-minder forward now that the Herdr gate has lifted. The Herdr Claude
+Code and Hermes Agent integrations are installed (`herdr integration status`:
+both `current`), which was the blocker on **Phase 2.a — Herdr integration
+layer** per `docs/superpowers/specs/2026-08-03-session-minder-design.md`.
+
+## Spike results (Phase 2.a, step 1) — verified live this session
+
+The spike the spec called for is effectively complete; all checks were run
+read-only from inside Herdr pane `w9` (session `herdr-4up`).
+
+- **Hook coexistence — SAFE.** Herdr's Claude installer *appended*: `~/.claude/settings.json`
+  keeps session-minder's `SessionStart` + `SessionEnd` and adds a second
+  `SessionStart` entry (`herdr-agent-state.sh session`, timeout 10). Hermes has
+  zero collision — session-minder uses `hooks.on_session_start/on_session_end`,
+  Herdr uses the plugin system (`plugins.enabled: herdr-agent-state`).
+- **Coexistence confirmed behaviorally.** 4 sessions captured since the Herdr
+  install (12:45), across both platforms, including this one.
+- **`HERDR_*` env vars ARE visible** to processes inside a pane:
+  `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`, `HERDR_SESSION`,
+  `HERDR_SOCKET_PATH`, `HERDR_ENV=1`. Capture enrichment needs no socket call.
+- **The join key is real.** `pane.list` on pane `w9` returns
+  `agent_session: {kind: "id", value: "8f7f70ae-9054-45b6-9f07-23e66f3a26b4"}` —
+  byte-identical to the `external_session_id` in `_sessionminder.sessions` for
+  this session. This was the load-bearing unknown.
+- **Hermes side reads plausible but unobserved live** — the Herdr Hermes plugin
+  does report `agent_session_id` from its `session_id` kwarg
+  (`~/.hermes/plugins/herdr-agent-state/__init__.py`), but no Hermes pane has
+  yet populated `agent_session`.
+- **New trap for implementation:** the socket API rejects an integer `id`
+  (`invalid type: integer 1, expected a string`). Request `id` must be a
+  **string**. Not stated in the docs section the spec cites.
 
 ## Honcho Context
-No prior thread named "session-minder" exists in Honcho, but peer=john has substantial related history that should inform the brainstorm:
 
-- **Existing infra**: Hermes has native `hermes sessions list` / `hermes --resume SESSION_ID`; a manually curated Hermes index at `_system/hermes-session-index.md`; a Claude Code `/index-session` skill writing to `~/idea-foundry/idea-foundry-vault/_system/claude-session-index.md` (title, UUID, date, note) with a `sessions` shell alias and `claude --resume <uuid>`; Kimi Code has its own index at `~/.kimi-code/skills/kimi-session-index.md`.
-- **Stated preferences**: intentional session naming (memory-reliance was a pain point); selective/deliberate indexing, not auto-archiving everything; a canonical cross-surface session identity so work/memory transfers between Claude Code and Hermes; explicit concern about clutter and over-indexing.
-- **Prior idea (unresolved)**: an automated session-splitting concept — AI detects topic divergence mid-session, spins off a new session with context, names/indexes it, verifies it's protected before abandoning the old thread.
-- **Core problem framing**: work is discontinuous across multiple AI runtimes/VPSs/repos; native session systems are fragmented and session IDs are hard to remember; the goal is reliable return to the right thread after interruption.
-- **Likely shape**: single-user, cross-surface (not pretending mechanics are identical), index-oriented (title/ID/date/workspace/agent/purpose), searchable/browsable, resume-oriented, human-in-the-loop for naming/indexing, file/Markdown-friendly.
+Queried `peer=john` (Dialectic, low reasoning). Consistent with the repo record:
+Phase 2 is an integration problem, not a UI problem; the Herdr Claude
+integration is *required* to populate `agent_session` ("no join key" without
+it); the recorded gate was workspace-per-project comfort → back up
+`settings.json` → inspect installer edits → verify session-minder hooks still
+run → end-to-end test. As of Honcho's last write, integrations were still
+uninstalled and hook preservation unverified. **Both are now resolved** —
+this session's findings supersede that state.
 
 ## Key Decisions
-- Postgres single source of truth (`_sessionminder` schema), replacing the three Markdown index files.
-- Capture is fully automatic (hook-driven), decoupled from curation (dashboard triage happens later, in bulk).
-- Capture wired through a thin bearer-token-authed API (not direct-to-Postgres hooks, not a scanner/cron poller).
-- Two-phase build: Phase 1 = capture platform (schema + API + hooks, no UI); Phase 2 = dashboard.
-- Confirmed all three platforms (Claude Code, Hermes, Kimi Code) support session-start/end shell hooks with a compatible JSON-stdin wire protocol.
-- Start-event inserts are idempotent (`ON CONFLICT DO NOTHING`) to handle resume firing the same hook as fresh start.
-- Attach/resume mechanism (tmux vs. Herdr vs. platform-native) deliberately deferred pending the Herdr evaluation.
-- Hosting: tailnet-only on vps8, same pattern as proposaltracker/37pencils.
-- Phase 1 tech stack: Fastify + TypeScript + postgres.js + Vitest (not full SvelteKit — no UI needed yet).
+
+- Treat Phase 2.a step 1 (spike) as **done**; findings above are the record.
+- Remaining unknown to close opportunistically: Hermes CLI-pane `agent_session`
+  population.
 
 ## Notes
-- Session started: 2026-08-03
-- Design spec: `docs/superpowers/specs/2026-08-03-session-minder-design.md`
-- Phase 1 implementation plan: `docs/superpowers/plans/2026-08-03-session-minder-phase1-capture-platform.md`
-- Git not yet initialized for this project — held off at John's request; init + first commit still pending.
-- Model guidance given: Opus for planning, Sonnet for routine implementation from a clear spec (or the `opusplan` alias).
 
-## Session Status
-Completed: 2026-08-03
-Servers cleaned: none (no MCP servers added this session)
+- Service healthy: `session-minder.service` active, `healthz` → `{"ok":true}` on tailnet.
+- `raw_metadata` is `{}` on every row — capture enrichment (2.a step 2) is unstarted.
+- Uncommitted: spec (+286), `.docs/status.md`, this file.
+- Herdr 0.7.5. Workspaces: w1 `~hermes`, w2 mccoy, w3 learning, w4 meanderings,
+  w6 wayfinder, w9 session-minder.
+- Session started: 2026-08-08 13:34 EDT (Claude Code `8f7f70ae-…`).
