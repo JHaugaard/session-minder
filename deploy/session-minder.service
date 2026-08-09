@@ -9,6 +9,13 @@ EnvironmentFile=/home/john/dev/active/session-minder/.env.local
 # Bind the tailnet IP directly — hooks call http://vps8-core:3000 over the
 # tailnet. Never 0.0.0.0 (spec: tailnet-only, Non-Goals).
 Environment=HOST=100.118.195.63
+# The Tailscale short name of this host. The attach endpoint compares it against
+# each session row's `host` column, and the hooks record the tailnet short name
+# (vps8-core), NOT the provider hostname that os.hostname() returns here
+# (srv1086450). Without this, the fallback to hostname() makes EVERY attach
+# degrade with `foreign_host` — verified: all 49 captured rows say vps8-core.
+# That failure presents to a user as "Herdr isn't working", not as missing config.
+Environment=SESSION_MINDER_HOST_NAME=vps8-core
 # Invoke node and tsx's CLI directly rather than via npx. systemd's default
 # PATH finds /usr/bin/node (v18.19.1), so both `/usr/bin/npx tsx` and
 # `/snap/bin/npx tsx` would run this service on Node 18 — below the project's

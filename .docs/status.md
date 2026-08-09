@@ -4,52 +4,81 @@ _Last verified against the running system 2026-08-09._
 
 ## Where are we?
 
-**Phase 1 is built, deployed, and capturing from all three tools. Phase 2.a is
-fully planned but not yet built.**
+**Phase 2.a is built, deployed, and verified live.** Not just planned anymore —
+the "click to jump back into a session" feature exists, is running on vps8, and
+has been proven against real sessions in all three tools.
 
 The idea, in one line: keeping track of past Claude Code, Hermes, and Kimi Code
 sessions used to mean hand-maintaining three Markdown files in the vault,
 updated only when you remembered. session-minder replaces that with one
-automatic record in Postgres, with a browsable dashboard to come.
+automatic record in Postgres, and now a working way to jump back into any of
+them.
 
 What's live right now:
 
-- A Postgres table on vps8 holding every session, and a small web service that
-  the three tools' hooks POST to when a session starts and ends. It runs as a
-  background service on vps8, reachable only over Tailscale.
-- **48 sessions captured** since Aug 3, 18 of them auto-flagged as noise.
-- All three tools are confirmed capturing end to end. Kimi was the last
-  holdout, and it's now proven with a real captured session — that was the one
-  step left unchecked from the original Phase 1 plan.
+- **50 sessions captured**, 18 of them flagged as noise. By tool: 25 Claude
+  Code, 24 Hermes, 1 Kimi Code.
+- A new "attach" feature that takes a session and does the sensible thing with
+  it: if it's still running in a Herdr pane, it switches you to that pane; if
+  it isn't, it opens a fresh pane that resumes it; and if neither is possible,
+  it hands you back the exact command to paste yourself. That last case isn't
+  a failure — it's the fallback every session gets, never a dead end.
+- All three tools were proven end to end against the real system: Claude,
+  Kimi, and Hermes each spawned a genuinely resumed session through the new
+  feature, confirmed by reading what actually showed up in the pane, not by
+  trusting what the server reported. Claude and Kimi were further proven
+  re-findable — attaching a second time switches to the existing pane instead
+  of opening a duplicate.
+- Only 2 of the 50 stored sessions carry the Herdr pane details the feature
+  relies on. That's expected — it's only recorded for sessions started after
+  today's deploy — and the number climbs on its own as you keep working.
 
-New this session: **Herdr is fully wired in.** All three Herdr integrations
-(Claude, Hermes, Kimi) are installed, and each one added its hooks *alongside*
-session-minder's rather than replacing them — which was the main risk. That was
-the thing blocking the "click to jump back into a session" feature, and it's
-now cleared.
+This shipped as 12 commits (`4b4581e..1a25745`), with 72 automated tests
+passing and a clean type-check.
 
-Two useful things came out of poking at the live system rather than the docs:
-Herdr genuinely does hand us the same session ID our own hooks record, so the
-two systems can be joined reliably; and all three tools turn out to have a
-working resume command, which we confirmed by reading each one's own `--help`
-rather than assuming.
+**Three real problems were found only by testing against the live system —
+every one of them had already passed the full automated test suite.** That's
+worth pausing on, because it says something about how this got tested: unit
+tests alone would have shipped all three.
 
-There is a complete, step-by-step build plan sitting ready. Nothing in it has
-been implemented yet — that's deliberate, so the build happens in its own
-session.
+1. The name given to a resumed session had a space in it, and Herdr's naming
+   rules reject that outright.
+2. That name was also the same for every session, and Herdr requires names to
+   be unique among running sessions — so only one resumed session could ever
+   exist at a time; a second one failed silently.
+3. The two-second limit on talking to Herdr was shorter than the roughly three
+   seconds Hermes actually takes to start up, so a Hermes session could never
+   successfully spawn.
+
+All three showed up to the user identically, as "Herdr unreachable" — which
+was misleading, since Herdr was running fine the whole time. All three are now
+fixed, and each has a test that pins the underlying rule so it can't quietly
+come back.
 
 ## What's unresolved?
 
-- **Nothing is blocking the build.** The plan is written and reviewed; the next
-  session executes it.
-- **Two small unknowns will surface during the build, both flagged in the plan
-  with what to do about them.** One is whether Kimi's resume flag behaves the
-  way its help text implies. The other is whether resuming a Hermes session
-  that originally came from Telegram is actually useful in a terminal — that's
-  a question about what the future dashboard should offer, not a bug.
+- **Hermes sessions can only ever be spawned fresh, never re-focused.** Herdr
+  doesn't report a session id for Hermes panes — confirmed by watching a live
+  one, not assumed — so a running Hermes session can't be recognized as
+  "already open." Attaching to one always opens a second pane. Claude and Kimi
+  don't have this problem. This should shape what the dashboard offers for
+  Hermes.
+- **A spawned pane can land on a prompt instead of a working session.** A test
+  spawn of Kimi stopped at its own "Trust this folder?" gate and sat there
+  waiting for a keystroke. Not a bug in this code, but the dashboard shouldn't
+  promise that clicking a session always drops you into something ready to
+  use.
+- **Every kind of Herdr failure currently reports the same generic message,
+  "Herdr unreachable."** That's exactly what made today's three bugs hard to
+  track down and cost real time. Teaching the system to tell "Herdr isn't
+  running" apart from "Herdr refused this specific request" is the recommended
+  first thing to do in the next phase.
+- **Not every Hermes session we've recorded can still be resumed.** Hermes
+  quietly prunes its own session history, so some older captured sessions will
+  fail to resume even though session-minder still holds their id.
 - **Noise thresholds** (under 60 seconds, under 3 messages) are still the
-  original conservative guess. 18 of 48 sessions are now flagged, which is a
-  lot. Worth tuning before the dashboard makes them visible.
+  original conservative guess. 18 of 50 sessions are now flagged — worth
+  tuning before the dashboard makes them visible.
 - **The three old Markdown index files in the vault are still sitting there**
   untouched. Retiring them is a later decision, not urgent.
 
@@ -64,19 +93,13 @@ dashboard conversation when it opens.
 
 ## What's next?
 
-**Start a fresh session and run the Phase 2.a build.** The handoff prompt was
-written at the end of this session — it points at the plan, sets the execution
-approach, and lists the three points where the build should stop and ask you.
-It's in the conversation transcript; if you've lost it, ask for it again and
-it'll be regenerated from the plan.
+**Phase 2.b — the dashboard — is the next conversation, with no remaining gate
+before starting it.** It will be designed against the attach feature that now
+actually exists, rather than around the "copy this command" placeholder that
+used to be the plan.
 
-The build is six tasks. The first five are pure code and should run
-unattended with review gates between them. The sixth is hands-on: it needs
-your sudo for a service restart, and it spawns real panes in your live Herdr
-workspace to prove the feature works.
-
-After that, Phase 2.b — the actual dashboard — is the next conversation, and
-it will be designed against the attach contract this build creates rather than
-around a "copy this command" placeholder.
+Worth doing early in that work: the error-reporting fix mentioned above, so the
+dashboard isn't stuck showing "Herdr unreachable" for every kind of failure the
+way today's diagnosis was.
 
 Optional and cheap whenever you feel like it: tune those noise thresholds.
