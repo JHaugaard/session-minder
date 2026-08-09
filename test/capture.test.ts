@@ -4,7 +4,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // vi.mock factories are hoisted above top-level const declarations, so the
 // mock must come from vi.hoisted() — a plain `const mockSql = vi.fn()` here
 // would throw "Cannot access 'mockSql' before initialization".
-const { mockSql } = vi.hoisted(() => ({ mockSql: vi.fn() }));
+const { mockSql } = vi.hoisted(() => {
+  const fn = vi.fn() as any;
+  // Real postgres.js sql.json() wraps the value in Parameter{value, type: 3802}.
+  // The mock unwraps to identity so assertions read the plain object directly.
+  fn.json = (v: unknown) => v;
+  return { mockSql: fn };
+});
 vi.mock('../src/db.js', () => ({ getSql: () => mockSql }));
 
 const { buildServer } = await import('../src/server.js');
@@ -64,6 +70,7 @@ describe('POST /api/sessions/capture — start event', () => {
       'abc-123',
       'mbp',
       '/home/john/dev/active/session-minder',
+      {},
     ]);
   });
 
@@ -93,6 +100,91 @@ describe('POST /api/sessions/capture — start event', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('stores Herdr pane identity under raw_metadata.herdr on start', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'claude_code',
+        external_session_id: 'abc-123',
+        event: 'start',
+        host: 'vps8-core',
+        project_path: '/home/john/dev/active/session-minder',
+        herdr: {
+          session: 'herdr-4up',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          pane_id: 'w9:p1',
+          socket_path: '/home/john/.config/herdr/sessions/herdr-4up/herdr.sock',
+        },
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+
+    // Pins the nesting rule: the pane identity must land under the `herdr`
+    // KEY of raw_metadata, not at the top level. A later consumer reading
+    // raw_metadata.herdr.pane_id depends on exactly this shape.
+    const [, ...values] = mockSql.mock.calls[0];
+    const rawMetadata = values[values.length - 1];
+    expect(rawMetadata).toEqual({
+      herdr: {
+        session: 'herdr-4up',
+        workspace_id: 'w9',
+        tab_id: 'w9:t1',
+        pane_id: 'w9:p1',
+        socket_path: '/home/john/.config/herdr/sessions/herdr-4up/herdr.sock',
+      },
+    });
+  });
+
+  it('sends an empty object for raw_metadata when not in a Herdr pane', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'claude_code',
+        external_session_id: 'no-herdr',
+        event: 'start',
+        host: 'mbp',
+      },
+    });
+
+    // Pins the backward-compatibility rule: hooks on machines with no Herdr
+    // (mbp, mini) omit the field entirely and must still capture normally.
+    expect(res.statusCode).toBe(204);
+    const [, ...values] = mockSql.mock.calls[0];
+    expect(values[values.length - 1]).toEqual({});
+  });
+
+  it('rejects a herdr object whose fields are not all strings', async () => {
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'claude_code',
+        external_session_id: 'abc-123',
+        event: 'start',
+        host: 'vps8-core',
+        herdr: { session: 'herdr-4up', pane_id: 42 },
+      },
+    });
+
+    // Pins validation: raw_metadata is queried by later consumers, so a
+    // malformed herdr blob must be refused rather than silently stored.
+    expect(res.statusCode).toBe(400);
   });
 });
 
@@ -134,8 +226,10 @@ describe('POST /api/sessions/capture — end event', () => {
       'vps8-core',
       1,
       false,
+      {}, // VALUES clause raw_metadata
       1,
       false,
+      {}, // SET clause raw_metadata
     ]);
   });
 
@@ -211,8 +305,10 @@ describe('POST /api/sessions/capture — end event', () => {
       'vps8-core',
       5,
       false,
+      {}, // VALUES clause raw_metadata
       5,
       false,
+      {}, // SET clause raw_metadata
     ]);
   });
 
@@ -248,8 +344,43 @@ describe('POST /api/sessions/capture — end event', () => {
       'vps8-core',
       null,
       true,
+      {}, // VALUES clause raw_metadata
       null,
       true,
+      {}, // SET clause raw_metadata
     ]);
+  });
+
+  it('merges Herdr metadata into existing raw_metadata on end, not replacing it', async () => {
+    mockSql.mockResolvedValueOnce([{ started_at: new Date(Date.now() - 600_000) }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const app = buildServer();
+    await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'claude_code',
+        external_session_id: 'abc-123',
+        event: 'end',
+        host: 'vps8-core',
+        herdr: {
+          session: 'herdr-4up',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          pane_id: 'w9:p1',
+          socket_path: '/home/john/.config/herdr/sessions/herdr-4up/herdr.sock',
+        },
+      },
+    });
+
+    // Pins the merge rule specifically: `||` concatenation preserves any
+    // other keys already in raw_metadata. A plain assignment would pass a
+    // "did it store the value" assertion while silently destroying data.
+    const [strings] = mockSql.mock.calls[1];
+    expect(strings.join('?')).toMatch(
+      /raw_metadata = _sessionminder\.sessions\.raw_metadata \|\|/
+    );
   });
 });
