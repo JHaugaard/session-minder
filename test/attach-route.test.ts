@@ -65,6 +65,7 @@ describe('POST /api/sessions/:id/attach', () => {
     mockSql.mockResolvedValueOnce([]);
     const res = await post();
     expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: 'not found' });
   });
 
   it('focuses the pane and reports action=focused', async () => {
@@ -150,6 +151,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('rejects a non-uuid id without touching the database', async () => {
     const res = await post('not-a-uuid');
     expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'invalid id' });
     expect(mockSql).not.toHaveBeenCalled();
   });
 
@@ -180,5 +182,64 @@ describe('POST /api/sessions/:id/attach', () => {
 
     expect(res.statusCode).toBe(500);
     expect(res.json().action).toBeUndefined();
+  });
+
+  it('degrades with a command when focusPane fails mid-flight', async () => {
+    const { HerdrUnreachableError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([
+      { pane_id: 'w9:p1', workspace_id: 'w9', tab_id: 'w9:t1', cwd: '/home/john/dev/wayfinder',
+        agent: 'claude',
+        agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'abc-123' } },
+    ]);
+    mockClient.focusPane.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
+
+    const res = await post();
+
+    // Pins RACE 2 — Herdr dying between listPanes() and the action. Test 6 covers
+    // race 1 only. Asserting `command` too is what stops the fallback being
+    // hard-coded to null: it must be re-derived through resolveAttach.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'herdr_unreachable',
+      command: 'claude --resume abc-123',
+    });
+  });
+
+  it('degrades with a command when startAgent fails mid-flight', async () => {
+    const { HerdrUnreachableError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
+    mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
+
+    const res = await post();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().action).toBe('degraded');
+    expect(res.json().command).toBe('claude --resume abc-123');
+  });
+
+  it('degrades for a session captured on another host without touching Herdr', async () => {
+    mockSql.mockResolvedValueOnce([row({ host: 'mbp' })]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+
+    const res = await post();
+
+    // Pins that the ROUTE feeds resolveAttach the LOCAL host, not the row's own
+    // host. With `localHost: session.host` the guard can never fire and a remote
+    // session would be spawned on this machine. The resolver's own unit tests
+    // cannot see this — they never exercise the route's wiring.
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'foreign_host',
+      command: 'claude --resume abc-123',
+    });
+    expect(mockClient.focusPane).not.toHaveBeenCalled();
+    expect(mockClient.createTab).not.toHaveBeenCalled();
   });
 });

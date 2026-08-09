@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { hostname } from 'node:os';
 import { getSql } from '../db.js';
 import { requireAuth } from '../auth.js';
-import { resolveAttach, type SessionRow } from '../attach.js';
+import { resolveAttach, type SessionRow, type AttachPlan } from '../attach.js';
 import {
   createHerdrClient,
   discoverHerdrSocket,
@@ -98,6 +98,14 @@ export function registerAttachRoute(app: FastifyInstance): void {
           panes: null,
           localHost: localHost(),
         });
+        // Structurally guaranteed by resolveAttach (panes: null always yields
+        // a degrade plan — see Task 5's non-null-assertion proof), but the
+        // static type is still the full AttachPlan union. Narrow explicitly
+        // rather than casting, so a future change to that contract fails
+        // loudly here instead of leaking spawn/focus fields into the body.
+        if (fallback.kind !== 'degrade') {
+          throw new Error('resolveAttach returned a non-degrade plan for panes: null');
+        }
         reply.send({ action: 'degraded', ...stripKind(fallback) });
         return;
       }
@@ -107,7 +115,7 @@ export function registerAttachRoute(app: FastifyInstance): void {
   );
 }
 
-function stripKind(plan: { kind: string } & Record<string, unknown>) {
+function stripKind(plan: Extract<AttachPlan, { kind: 'degrade' }>) {
   const { kind: _kind, ...rest } = plan;
   return rest;
 }
