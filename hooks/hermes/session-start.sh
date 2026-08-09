@@ -31,9 +31,29 @@ if [ -z "$token" ] && [ -r /home/john/dev/active/session-minder/.env.local ]; th
   token="$(sed -n 's/^SESSION_MINDER_TOKEN=//p' /home/john/dev/active/session-minder/.env.local | head -1)"
 fi
 
+# Herdr pane identity (spec Phase 2.a: capture enrichment). Herdr exports these
+# into every pane it owns; outside a pane they are simply unset and the object
+# is omitted. Guard mirrors Herdr's own hook script — HERDR_ENV=1 plus a
+# non-empty socket path and pane id — so we agree with Herdr on what "inside a
+# pane" means. This is a pure env read: no socket call, so it cannot add
+# latency or a new failure mode to a fire-and-forget hook.
+herdr_json=""
+if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+  herdr_json="$(jq -n \
+    --arg session "${HERDR_SESSION:-}" \
+    --arg workspace_id "${HERDR_WORKSPACE_ID:-}" \
+    --arg tab_id "${HERDR_TAB_ID:-}" \
+    --arg pane_id "${HERDR_PANE_ID:-}" \
+    --arg socket_path "${HERDR_SOCKET_PATH:-}" \
+    '{herdr: {session: $session, workspace_id: $workspace_id, tab_id: $tab_id,
+              pane_id: $pane_id, socket_path: $socket_path}}' 2>/dev/null)"
+fi
+
 body="$(jq -n --arg sid "$session_id" --arg host "$host" --arg cwd "$cwd" \
+  --argjson herdr "${herdr_json:-{\}}" \
   '{platform: "hermes", external_session_id: $sid, event: "start", host: $host}
-   + (if $cwd == "" then {} else {project_path: $cwd} end)')"
+   + (if $cwd == "" then {} else {project_path: $cwd} end)
+   + $herdr')"
 
 setsid curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/capture" \
   -H "Authorization: Bearer ${token}" \
