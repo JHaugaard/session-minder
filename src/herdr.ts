@@ -10,6 +10,14 @@ import { join } from 'node:path';
 
 const REQUEST_TIMEOUT_MS = 2000;
 
+// `agent.start` doesn't return when the process launches — Herdr blocks the
+// response until the agent is detected and ready for input. Measured live
+// against Herdr 0.7.5: hermes took 3.1s end to end; claude and kimi came back
+// under 2s, which is the only reason their spawns ever worked under the flat
+// 2s default. 15s gives headroom for a slow boot without hanging the HTTP
+// request as long as Herdr's own 30s ceiling would.
+const AGENT_START_TIMEOUT_MS = 15000;
+
 export interface HerdrAgentSession {
   source: string;
   agent: string;
@@ -58,7 +66,8 @@ export interface HerdrClient {
 function request(
   socketPath: string,
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  timeoutMs: number = REQUEST_TIMEOUT_MS
 ): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => {
     const conn = net.createConnection(socketPath);
@@ -74,7 +83,7 @@ function request(
       reject(new HerdrUnreachableError(message));
     };
 
-    const timer = setTimeout(() => fail(`${method} timed out`), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => fail(`${method} timed out`), timeoutMs);
 
     conn.on('error', (err) => {
       clearTimeout(timer);
@@ -142,12 +151,22 @@ export function createHerdrClient(socketPath: string): HerdrClient {
       return { paneId, tabId };
     },
     async startAgent({ paneId, kind, name, args }) {
-      const result = await request(socketPath, 'agent.start', {
-        pane_id: paneId,
-        kind,
-        name,
-        args,
-      });
+      const result = await request(
+        socketPath,
+        'agent.start',
+        {
+          pane_id: paneId,
+          kind,
+          name,
+          args,
+          // Herdr's own readiness timeout must fire BEFORE our socket gives
+          // up (AGENT_START_TIMEOUT_MS above) — that way a genuinely slow
+          // agent produces a real Herdr error message instead of our opaque
+          // "agent.start timed out".
+          timeout_ms: 12000,
+        },
+        AGENT_START_TIMEOUT_MS
+      );
       return { argv: (result.argv ?? []) as string[] };
     },
   };
