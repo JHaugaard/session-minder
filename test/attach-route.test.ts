@@ -116,6 +116,13 @@ describe('POST /api/sessions/:id/attach', () => {
     expect(mockClient.startAgent).toHaveBeenCalledWith(
       expect.objectContaining({ paneId: 'w9:p3', kind: 'claude', args: ['--resume', 'abc-123'] })
     );
+    // Pins Herdr's agent-name rule, not the literal string. agent.start rejects
+    // names outside ^[a-z][a-z0-9_-]{0,31}$ with `invalid_agent_name`, and because
+    // src/herdr.ts maps protocol errors to HerdrUnreachableError, a violation
+    // reaches the caller as a misleading "herdr_unreachable" degrade with an
+    // orphaned tab left behind. Verified live: a space here broke every spawn.
+    const startedWith = mockClient.startAgent.mock.calls[0][0];
+    expect(startedWith.name).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
 
   it('degrades with 200 and a copyable command when Herdr is not running', async () => {

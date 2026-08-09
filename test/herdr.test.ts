@@ -165,7 +165,7 @@ describe('Herdr socket client', () => {
     const result = await createHerdrClient(socketPath).startAgent({
       paneId: 'w9:p3',
       kind: 'claude',
-      name: 'session-minder resume',
+      name: 'session-minder-resume',
       args: ['--resume', 'abc'],
     });
 

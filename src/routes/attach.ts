@@ -77,7 +77,11 @@ export function registerAttachRoute(app: FastifyInstance): void {
           const started = await client!.startAgent({
             paneId: tab.paneId,
             kind: plan.agent_kind,
-            name: 'session-minder resume',
+            // Herdr's agent.start rejects names outside ^[a-z][a-z0-9_-]{0,31}$
+            // with invalid_agent_name, and src/herdr.ts maps that protocol error
+            // to HerdrUnreachableError — so a bad name here surfaces to the
+            // caller as a misleading "Herdr unreachable" degrade, not a name error.
+            name: 'session-minder-resume',
             args: plan.args,
           });
           reply.send({
