@@ -1,5 +1,6 @@
 // test/attach-route.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { herdrAgentName } from '../src/attach.js';
 
 const { mockSql, mockClient, mockDiscover } = vi.hoisted(() => ({
   mockSql: vi.fn(),
@@ -123,6 +124,10 @@ describe('POST /api/sessions/:id/attach', () => {
     // orphaned tab left behind. Verified live: a space here broke every spawn.
     const startedWith = mockClient.startAgent.mock.calls[0][0];
     expect(startedWith.name).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+    // Pins that the name is DERIVED from the session, not a constant — a
+    // hard-coded name can only ever have one live agent, which is the exact
+    // defect this fix addresses. Fails if someone reinstates a fixed string.
+    expect(startedWith.name).toBe(herdrAgentName(row().external_session_id));
   });
 
   it('degrades with 200 and a copyable command when Herdr is not running', async () => {

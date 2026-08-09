@@ -62,6 +62,16 @@ const RESUME: Record<Platform, ResumeSpec> = {
   },
 };
 
+// Herdr requires agent names to match ^[a-z][a-z0-9_-]{0,31}$ AND to be unique
+// among live agents. The `sm-` prefix is required, not decoration: Hermes ids
+// start with a digit (e.g. `20260806_083759_58cb99`), which alone would fail
+// the leading-letter rule. Deriving the name from external_session_id is what
+// gives uniqueness — a constant name can only ever have one live agent.
+export function herdrAgentName(externalSessionId: string): string {
+  const sanitized = externalSessionId.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  return `sm-${sanitized}`.slice(0, 32);
+}
+
 export function resolveAttach(input: {
   session: SessionRow;
   panes: HerdrPane[] | null;

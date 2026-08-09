@@ -1,6 +1,6 @@
 // test/attach.test.ts
 import { describe, it, expect } from 'vitest';
-import { resolveAttach, type SessionRow } from '../src/attach.js';
+import { resolveAttach, herdrAgentName, type SessionRow } from '../src/attach.js';
 import type { HerdrPane } from '../src/herdr.js';
 
 const session = (over: Partial<SessionRow> = {}): SessionRow => ({
@@ -237,5 +237,54 @@ describe('resolveAttach', () => {
     // Pins guard ORDER again: you do not need to know how to RESUME a session
     // in order to FOCUS the pane it is already running in.
     expect(plan.kind).toBe('focus');
+  });
+});
+
+describe('herdrAgentName', () => {
+  it('derives the documented name for a Claude Code uuid', () => {
+    expect(herdrAgentName('1b0afe71-1876-41f6-bb40-b82d1fafc593')).toBe(
+      'sm-1b0afe71-1876-41f6-bb40-b82d1'
+    );
+  });
+
+  it('derives the documented name for a Kimi session_ id', () => {
+    expect(herdrAgentName('session_5890019f-d377-4187-b14a-2fd406dd32c7')).toBe(
+      'sm-session_5890019f-d377-4187-b1'
+    );
+  });
+
+  it('derives the documented name for a Hermes id', () => {
+    expect(herdrAgentName('20260806_083759_58cb99')).toBe('sm-20260806_083759_58cb99');
+  });
+
+  it('always matches Herdr\'s agent-name format', () => {
+    const ids = [
+      '1b0afe71-1876-41f6-bb40-b82d1fafc593',
+      'session_5890019f-d377-4187-b14a-2fd406dd32c7',
+      '20260806_083759_58cb99',
+    ];
+    for (const id of ids) {
+      expect(herdrAgentName(id)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+    }
+  });
+
+  it('yields a valid name even for an id that starts with a digit', () => {
+    // Pins the Hermes case: without the `sm-` prefix, a name derived directly
+    // from a digit-leading id would fail Herdr's leading-letter rule.
+    const name = herdrAgentName('20260806_083759_58cb99');
+    expect(name).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+  });
+
+  it('truncates a long id to exactly 32 characters', () => {
+    const name = herdrAgentName('a'.repeat(100));
+    expect(name).toHaveLength(32);
+  });
+
+  it('yields different names for different session ids', () => {
+    // Pins the entire point of this fix: a constant name can only ever have
+    // one live agent. Two sessions must get two distinct names.
+    const a = herdrAgentName('1b0afe71-1876-41f6-bb40-b82d1fafc593');
+    const b = herdrAgentName('20260806_083759_58cb99');
+    expect(a).not.toBe(b);
   });
 });

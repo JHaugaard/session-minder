@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { hostname } from 'node:os';
 import { getSql } from '../db.js';
 import { requireAuth } from '../auth.js';
-import { resolveAttach, type SessionRow, type AttachPlan } from '../attach.js';
+import { resolveAttach, herdrAgentName, type SessionRow, type AttachPlan } from '../attach.js';
 import {
   createHerdrClient,
   discoverHerdrSocket,
@@ -77,11 +77,14 @@ export function registerAttachRoute(app: FastifyInstance): void {
           const started = await client!.startAgent({
             paneId: tab.paneId,
             kind: plan.agent_kind,
-            // Herdr's agent.start rejects names outside ^[a-z][a-z0-9_-]{0,31}$
-            // with invalid_agent_name, and src/herdr.ts maps that protocol error
-            // to HerdrUnreachableError — so a bad name here surfaces to the
-            // caller as a misleading "Herdr unreachable" degrade, not a name error.
-            name: 'session-minder-resume',
+            // Herdr's agent.start enforces two rules: the name must match
+            // ^[a-z][a-z0-9_-]{0,31}$, AND it must be unique among live agents
+            // (a second spawn with a taken name is rejected outright). Both
+            // failure modes are protocol errors that src/herdr.ts maps to
+            // HerdrUnreachableError — so either one surfaces to the caller as
+            // a misleading "Herdr unreachable" degrade, with an orphaned tab
+            // left behind since tab.create already succeeded.
+            name: herdrAgentName(session.external_session_id),
             args: plan.args,
           });
           reply.send({
