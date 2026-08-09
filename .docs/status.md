@@ -6,7 +6,10 @@ _Last verified against the running system 2026-08-09._
 
 **Phase 2.a is built, deployed, and verified live.** Not just planned anymore —
 the "click to jump back into a session" feature exists, is running on vps8, and
-has been proven against real sessions in all three tools.
+all three tools spawn successfully through it. Claude and Hermes were
+confirmed by reading the pane's own content showing a resumed conversation;
+Kimi was confirmed by Herdr reporting the resumed session id, while a separate
+Kimi spawn stalled at its own "Trust this folder?" gate.
 
 The idea, in one line: keeping track of past Claude Code, Hermes, and Kimi Code
 sessions used to mean hand-maintaining three Markdown files in the vault,
@@ -36,7 +39,7 @@ What's live right now:
   relies on. That's expected — it's only recorded for sessions started after
   today's deploy — and the number climbs on its own as you keep working.
 
-This shipped as 12 commits (`4b4581e..1a25745`), with 72 automated tests
+This shipped as 15 commits on top of `4b4581e`, with 79 automated tests
 passing and a clean type-check.
 
 **Three real problems were found only by testing against the live system —

@@ -184,6 +184,23 @@ describe('Herdr socket client', () => {
     expect(result.argv).toEqual(['claude', '--resume', 'abc']);
   });
 
+  it('sends tab.close with the tab_id param', async () => {
+    const { socketPath, received } = fakeHerdr(() => ({ id: '1', result: { type: 'ok' } }));
+
+    await createHerdrClient(socketPath).closeTab('w9:t2');
+
+    // Verified against Herdr 0.7.5's own schema, not inferred:
+    // schemas/request/oneOf[28] gives `method` const `tab.close` with
+    // `params: $ref TabTarget`, and TabTarget is `{ tab_id: string }` with
+    // tab_id required. Record that here so nobody re-derives it. This
+    // mapping matters more than most: if it were wrong, closeTab would throw,
+    // the spawn route's cleanup catch would swallow that error silently, and
+    // the orphaned tab it exists to remove would leak exactly as before —
+    // with the rest of the suite still green.
+    expect(received[0].method).toBe('tab.close');
+    expect(received[0].params).toEqual({ tab_id: 'w9:t2' });
+  });
+
   it('waits past the default 2s timeout for agent.start', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'herdr-test-'));
     const socketPath = join(dir, 'herdr.sock');
@@ -301,14 +318,20 @@ describe('Herdr socket client', () => {
     const bytesBeforeE = Buffer.byteLength(jsonStr.slice(0, eIndex), 'utf8');
     const payload = Buffer.from(jsonStr, 'utf8');
     // Split between the two bytes of é's UTF-8 encoding (0xC3 0xA9) — this is
-    // exactly the boundary that corrupts if a chunk is decoded with
-    // `chunk.toString()` independently of the chunk before it. Reverting
-    // `buf += String(chunk)` (which relies on `setEncoding('utf8')` to hold
-    // the dangling byte until the rest arrives) to per-chunk `.toString()`
-    // must fail this test.
+    // exactly the boundary that corrupts if a chunk is decoded independently
+    // of the chunk before it.
     const splitIndex = bytesBeforeE + 1;
     const first = payload.subarray(0, splitIndex);
     const second = payload.subarray(splitIndex);
+    // The load-bearing line this pins is `conn.setEncoding('utf8')` in
+    // src/herdr.ts — it is what buffers the dangling first byte of é until
+    // the second chunk arrives. Reverting `buf += String(chunk)` back to a
+    // per-chunk `.toString()` while leaving `setEncoding('utf8')` in place is
+    // a NO-OP: the chunk arrives at the `data` handler already decoded as a
+    // JS string, so `String(chunk)` and `chunk.toString()` behave
+    // identically there and this test still passes. Only reverting
+    // `setEncoding('utf8')` (so `data` fires with raw Buffers again) breaks
+    // this test.
 
     const server = net.createServer((conn) => {
       conn.on('data', () => {
@@ -385,15 +408,24 @@ describe('discoverHerdrSocket', () => {
   it('skips a stale socket FILE with no listener and returns the live candidate', async () => {
     const home = mkdtempSync(join(tmpdir(), 'herdr-home-'));
     cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-    const staleDir = join(home, '.config', 'herdr', 'sessions', 'stale-session');
+    // The stale file MUST be the default socket (`~/.config/herdr/herdr.sock`,
+    // candidates[0] unconditionally — see discoverHerdrSocket, which pushes it
+    // before scanning sessions/). readdir returns session directory names
+    // alphabetically on this filesystem, so if the stale file were placed
+    // under sessions/ instead, a session name sorting before the live one
+    // would make an existence-only implementation return the STALE path and
+    // fail this assertion for the wrong reason, while a name sorting after
+    // would let an existence-only implementation return the live path and
+    // pass — either way the test wouldn't discriminate the defect. Anchoring
+    // the stale file at the always-first default slot makes the two
+    // implementations disagree deterministically: existence-only always
+    // returns this stale default path (and fails), ping-probing always skips
+    // it for the live session responder (and passes).
+    const staleDefaultPath = join(home, '.config', 'herdr', 'herdr.sock');
+    mkdirSync(join(home, '.config', 'herdr'), { recursive: true });
+    writeFileSync(staleDefaultPath, '');
     const liveDir = join(home, '.config', 'herdr', 'sessions', 'live-session');
-    mkdirSync(staleDir, { recursive: true });
     mkdirSync(liveDir, { recursive: true });
-    // A plain file, not a socket — nothing is listening on it. Proves the
-    // ping probe (not mere `access()` existence) is what decides: an
-    // implementation that only checked existence would wrongly return this.
-    const stalePath = join(staleDir, 'herdr.sock');
-    writeFileSync(stalePath, '');
     const livePath = join(liveDir, 'herdr.sock');
     liveResponderAt(livePath);
     process.env.HOME = home;

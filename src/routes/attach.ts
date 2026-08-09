@@ -127,8 +127,11 @@ export function registerAttachRoute(app: FastifyInstance): void {
           if (tabId) {
             try {
               await client!.closeTab(tabId);
-            } catch {
-              // Swallowed intentionally — see comment above.
+            } catch (cleanupErr) {
+              // Best-effort cleanup must never turn a degrade into a 500, so
+              // the failure is swallowed here — but it must not be silent:
+              // log it so an orphaned tab can still be traced.
+              request.log.warn({ err: cleanupErr }, 'orphaned tab cleanup failed');
             }
           }
           reply.send({ action: 'degraded', ...stripKind(degradeFallback(session)) });
