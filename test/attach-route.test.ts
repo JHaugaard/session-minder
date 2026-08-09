@@ -152,4 +152,33 @@ describe('POST /api/sessions/:id/attach', () => {
     expect(res.statusCode).toBe(400);
     expect(mockSql).not.toHaveBeenCalled();
   });
+
+  it('does not degrade when listPanes fails with a non-Herdr error', async () => {
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockRejectedValueOnce(new TypeError('bug in the client'));
+
+    const res = await post();
+
+    // Pins the error-class rule, not just "some response came back". ONLY
+    // HerdrUnreachableError may degrade. Swallowing every error would report
+    // a real bug to the dashboard as a successful 200 degrade — verified by
+    // mutation: deleting the instanceof guard passes the whole rest of the suite.
+    expect(res.statusCode).toBe(500);
+    expect(res.json().action).toBeUndefined();
+  });
+
+  it('does not degrade when a spawn call fails with a non-Herdr error', async () => {
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockRejectedValueOnce(new TypeError('bug in the client'));
+
+    // Pins the second guard independently. The two catch sites are separate
+    // code paths and a fix to one does not protect the other.
+    const res = await post();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().action).toBeUndefined();
+  });
 });
