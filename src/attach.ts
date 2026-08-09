@@ -12,6 +12,10 @@ export interface SessionRow {
   external_session_id: string;
   host: string;
   project_path: string | null;
+  // Carried through for the caller (Task 5's route selects it for display) —
+  // deliberately NOT a branch input here. "Live" is defined by a pane match,
+  // not by `ended_at IS NULL`. Accepted consequence: a session still running
+  // outside any Herdr pane (e.g. a detached process) takes the spawn branch.
   ended_at: Date | null;
 }
 
@@ -40,7 +44,7 @@ interface ResumeSpec {
   command: (externalSessionId: string) => string;
 }
 
-const RESUME: Partial<Record<Platform, ResumeSpec>> = {
+const RESUME: Record<Platform, ResumeSpec> = {
   claude_code: {
     agentKind: 'claude',
     args: (id) => ['--resume', id],
@@ -64,7 +68,11 @@ export function resolveAttach(input: {
   localHost: string;
 }): AttachPlan {
   const { session, panes, localHost } = input;
-  const resume = RESUME[session.platform];
+  // `as ... | undefined`: the RESUME map is total over Platform, but nothing
+  // validates that a DB row's platform column actually landed in that union
+  // (the SQL cast is not statically checked), so a lookup miss is still a
+  // real runtime possibility — this keeps that safety net.
+  const resume = RESUME[session.platform] as ResumeSpec | undefined;
   const command = resume ? resume.command(session.external_session_id) : null;
 
   // Checked before the pane join on purpose: external_session_id is unique

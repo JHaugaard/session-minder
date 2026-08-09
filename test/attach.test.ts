@@ -197,4 +197,45 @@ describe('resolveAttach', () => {
     // stale id collision across machines can never focus a local pane.
     expect(plan.kind).toBe('degrade');
   });
+
+  it('focuses the matching pane, not the first pane in the list', () => {
+    const plan = resolveAttach({
+      session: session(),
+      panes: [
+        pane({ pane_id: 'w9:p9', agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'other-uuid' } }),
+        pane(),
+      ],
+      localHost: 'vps8-core',
+    });
+
+    // Pins pane SELECTION, not just match-existence. Every other test passes a
+    // one-element array, so a `some() ? panes[0] : undefined` implementation
+    // would focus a STRANGER'S pane and pass the entire rest of the suite.
+    expect(plan).toEqual({ kind: 'focus', pane_id: 'w9:p1', workspace_id: 'w9' });
+  });
+
+  it('focuses a live pane even when the session has no project_path', () => {
+    const plan = resolveAttach({
+      session: session({ project_path: null }),
+      panes: [pane()],
+      localHost: 'vps8-core',
+    });
+
+    // Pins guard ORDER: the pane join runs BEFORE the spawn preconditions.
+    // project_path is only needed to CREATE a tab; focusing an existing pane
+    // needs no cwd. Many Hermes and cron sessions have no project_path.
+    expect(plan.kind).toBe('focus');
+  });
+
+  it('focuses a live pane even for a platform with no resume spec', () => {
+    const plan = resolveAttach({
+      session: session({ platform: 'future_agent' as unknown as SessionRow['platform'] }),
+      panes: [pane()],
+      localHost: 'vps8-core',
+    });
+
+    // Pins guard ORDER again: you do not need to know how to RESUME a session
+    // in order to FOCUS the pane it is already running in.
+    expect(plan.kind).toBe('focus');
+  });
 });
