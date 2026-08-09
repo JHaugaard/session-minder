@@ -104,6 +104,26 @@ describe('Herdr socket client', () => {
     );
   });
 
+  it('throws HerdrUnreachableError when the connection closes without a response', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'herdr-test-'));
+    const socketPath = join(dir, 'herdr.sock');
+    const server = net.createServer((conn) => {
+      // Accept the request but close without ever writing a response —
+      // exercises the `close` handler's own fail() path, not the
+      // data-then-error or data-then-result paths covered elsewhere.
+      conn.on('data', () => conn.end());
+    });
+    server.listen(socketPath);
+    cleanups.push(() => {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    await expect(createHerdrClient(socketPath).listPanes()).rejects.toBeInstanceOf(
+      HerdrUnreachableError
+    );
+  });
+
   it('sends pane.focus with the pane_id param', async () => {
     const { socketPath, received } = fakeHerdr(() => ({ id: '1', result: { type: 'ok' } }));
 

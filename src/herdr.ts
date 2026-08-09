@@ -21,8 +21,11 @@ export interface HerdrPane {
   pane_id: string;
   workspace_id: string;
   tab_id: string;
-  cwd: string | null;
-  agent: string | null;
+  // The wire OMITS these keys entirely (not `null`) when Herdr has nothing to
+  // report — confirmed against 0.7.5: a pane with no attached agent sends no
+  // `agent`/`agent_session` key at all. Optional, not nullable.
+  cwd?: string | null;
+  agent?: string | null;
   agent_session?: HerdrAgentSession;
 }
 
@@ -59,10 +62,12 @@ function request(
 ): Promise<Record<string, any>> {
   return new Promise((resolve, reject) => {
     const conn = net.createConnection(socketPath);
+    conn.setEncoding('utf8');
     let buf = '';
     let settled = false;
 
     const fail = (message: string) => {
+      clearTimeout(timer);
       if (settled) return;
       settled = true;
       conn.destroy();
@@ -82,7 +87,11 @@ function request(
     });
 
     conn.on('data', (chunk) => {
-      buf += chunk.toString();
+      // `setEncoding('utf8')` above buffers any multi-byte sequence split
+      // across a chunk boundary and hands us back a complete string here —
+      // decoding each raw chunk independently (`chunk.toString()`) would
+      // silently corrupt UTF-8 that straddles a read boundary.
+      buf += String(chunk);
       const idx = buf.indexOf('\n');
       if (idx < 0) return;
       clearTimeout(timer);
@@ -97,7 +106,11 @@ function request(
       }
       if (settled) return;
       settled = true;
-      conn.end();
+      // One request per connection and the full response is already in hand,
+      // so destroying (rather than half-closing with `end()`) is safe here
+      // and avoids leaving the client socket open if the peer never sends
+      // its own FIN.
+      conn.destroy();
       resolve(parsed.result ?? {});
     });
 
