@@ -7,6 +7,9 @@ integration) and 2.b (Dashboard) after the Herdr evaluation landed (see
 Updated: 2026-08-08 — Herdr integrations installed; the 2.a spike ran and
 resolved every blocking unknown (see "Spike results"). 2.a is unblocked for
 implementation.
+Updated: 2026-08-09 — Kimi Code integration installed and Kimi capture
+live-verified; resume commands verified for all three platforms. Phase 2.a
+now covers Claude Code, Hermes, and Kimi Code equally.
 Status: approved for planning
 
 ## Problem
@@ -323,11 +326,10 @@ Everything below was doc-derived on 2026-08-03 and re-verified hands-on on
   `~/.claude/hooks/herdr-agent-state.sh` + `settings.json` entries; Kimi Code
   → appended `[[hooks]]` in `config.toml`; Hermes → plugin in
   `~/.hermes/plugins/herdr-agent-state/` enabled in `config.yaml`.
-  **Append-not-replace confirmed** for Claude Code and Hermes (see spike
-  results). Kimi Code remains doc-only, consistent with its deferred status.
-  Both installed integrations self-report via `herdr integration status`
-  (`claude: current (v7)`, `hermes: current (v3)`) — a cheap post-upgrade
-  regression check.
+  **Append-not-replace confirmed for all three** — Claude Code and Hermes on
+  2026-08-08, Kimi Code on 2026-08-09. All three self-report via
+  `herdr integration status` (`claude: current (v7)`, `hermes: current (v3)`,
+  `kimi: current (v5)`) — a cheap post-upgrade regression check.
 - **Plugin system**: `herdr-plugin.toml` manifest, `[[events]]` subscriptions,
   any-language commands receiving `HERDR_PLUGIN_EVENT_JSON` — a possible
   later home for session-minder actions inside Herdr itself.
@@ -350,9 +352,17 @@ Everything below was doc-derived on 2026-08-03 and re-verified hands-on on
      socket → focus/attach that pane.
    - **Ended** — spawn a new Herdr pane in the row's `project_path` running
      the platform-native resume command (`claude --resume <uuid>`, etc.).
-   - **Degrade** — Herdr unreachable or platform not resumable → return the
-     platform-native resume command as copyable text (the dashboard's v1
-     behavior survives as the fallback).
+   - **Degrade** — Herdr unreachable, session captured on another host, or no
+     `project_path` to spawn into → return the platform-native resume command
+     as copyable text (the dashboard's v1 behavior survives as the fallback).
+
+**Resume commands (all three verified 2026-08-09 against the installed
+binaries):** `claude --resume <id>`, `hermes --resume <id>`,
+`kimi --session <id>`. The Herdr `agent.start` kind is `claude` / `hermes` /
+`kimi` respectively — note it differs from the `platform` column value for two
+of the three. The `external_session_id` is passed through verbatim in every
+case; Kimi's stored session directories are literally named `session_<uuid>`,
+so its prefix is part of the id, not a wrapper to strip.
 
 ### Spike results (2026-08-08, Herdr 0.7.5)
 
@@ -458,12 +468,16 @@ and an unpopulated CLI one degrades identically.
    Full findings and 2.a design: "Herdr Integration" section above. John is
    adopting Herdr as his multiplexer (replacing tmux), which is what makes
    this the natural route.
-2. ~~Kimi Code hook support.~~ **Resolved** — confirmed available
-   (`SessionStart`/`SessionEnd` in `~/.kimi-code/config.toml`, same
-   JSON-stdin/exit-code model as Claude Code and Hermes). Remaining work is
-   implementation only, deferred to when Kimi Code is actually brought online
-   for project use — expected to resemble Claude Code (pinned-repo,
-   intentional sessions) given its shared lineage.
+2. ~~Kimi Code hook support.~~ **Fully resolved 2026-08-09** — no longer
+   deferred. Capture is live-verified: `_sessionminder.sessions` holds a real
+   `kimi_code` row with both a start and an end event
+   (`session_5890019f-…`), which discharges Phase 1's one skipped step
+   (Task 9, Step 5). The Herdr Kimi integration is installed
+   (`kimi: current (v5)`) and appended cleanly — session-minder's two
+   `[[hooks]]` blocks in `~/.kimi-code/config.toml` survive untouched, and
+   Herdr's own blocks follow them under a `# >>> herdr kimi integration`
+   marker. Kimi Code is now a first-class platform in Phase 2.a alongside
+   Claude Code and Hermes.
 3. **Noise thresholds.** Exact duration/message_count cutoffs for
    `noise_flag` to be tuned empirically once real Hermes capture data exists.
 4. ~~**Herdr spike unknowns (Phase 2.a, step 1).**~~ **Resolved 2026-08-08**

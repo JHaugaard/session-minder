@@ -334,13 +334,15 @@ git commit -m "feat(capture): accept Herdr pane identity and merge into raw_meta
 - Modify: `hooks/claude-code/session-end.sh`
 - Modify: `hooks/hermes/session-start.sh`
 - Modify: `hooks/hermes/session-end.sh`
+- Modify: `hooks/kimi-code/session-start.sh`
+- Modify: `hooks/kimi-code/session-end.sh`
 - Test: manual, per the existing convention ("Hook scripts: manual verification against a live Claude Code and Hermes session. Thin enough that heavy automated coverage isn't warranted." — spec: Testing)
 
 **Interfaces:**
 - Consumes: the `herdr` payload field from Task 1.
 - Produces: nothing further tasks consume — this is the capture-side leaf.
 
-**Note on Kimi Code:** `hooks/kimi-code/*.sh` are deliberately **not** modified. Kimi capture is deferred until Kimi Code is brought online for real project use (spec: Open Question 2), and its hooks have never been live-verified. Adding an unverifiable code path to them now would be scope creep. This is a knowing, recorded omission.
+**Kimi Code is now in scope** (revised 2026-08-09). An earlier draft of this plan excluded `hooks/kimi-code/*.sh` as unverifiable. That is no longer true: the Herdr Kimi integration is installed (`kimi: current (v5)`), and `_sessionminder.sessions` holds a real captured `kimi_code` row (`session_5890019f-…`, start *and* end), which discharges Phase 1's one skipped step (Task 9, Step 5 — live Kimi verification). All three platforms are now first-class in this phase.
 
 - [ ] **Step 1: Add the Herdr env block to `hooks/claude-code/session-start.sh`**
 
@@ -407,7 +409,7 @@ echo '{"session_id":"test-uuid","cwd":"/tmp"}' | SESSION_MINDER_URL=http://127.0
 
 Expected: the `-d` argument contains a `herdr` object with all five string fields populated from the environment.
 
-- [ ] **Step 4: Apply the same change to the other three hooks**
+- [ ] **Step 4: Apply the same change to the other five hooks**
 
 Repeat Steps 1–3 for:
 - `hooks/claude-code/session-end.sh` — same env block; the body jq gains `--argjson herdr "${herdr_json:-{\}}"` and `+ $herdr`. That file's body has no `$cwd` term, so the expression becomes:
@@ -419,6 +421,10 @@ Repeat Steps 1–3 for:
   ```
 - `hooks/hermes/session-start.sh` — identical to the Claude start hook except `platform: "hermes"`.
 - `hooks/hermes/session-end.sh` — identical to the Claude end hook except `platform: "hermes"`.
+- `hooks/kimi-code/session-start.sh` — identical to the Claude start hook except `platform: "kimi_code"`.
+- `hooks/kimi-code/session-end.sh` — identical to the Claude end hook except `platform: "kimi_code"`.
+
+Read each file before editing rather than assuming it matches the Claude hook line-for-line — the Hermes and Kimi scripts were written separately and their body-construction expressions differ slightly (the Hermes start hook carries `$cwd`, for instance).
 
 - [ ] **Step 5: End-to-end verification against the live service**
 
@@ -435,7 +441,8 @@ Expected: the newest row's `raw_metadata` is `{"herdr": {"session": "...", "work
 
 ```bash
 git add hooks/claude-code/session-start.sh hooks/claude-code/session-end.sh \
-        hooks/hermes/session-start.sh hooks/hermes/session-end.sh
+        hooks/hermes/session-start.sh hooks/hermes/session-end.sh \
+        hooks/kimi-code/session-start.sh hooks/kimi-code/session-end.sh
 git commit -m "feat(hooks): pass Herdr pane identity through to capture"
 ```
 
@@ -879,7 +886,17 @@ git commit -m "feat(herdr): add socket client with session discovery"
   }): AttachPlan;
   ```
 
-**Resume-command table.** Only `claude_code` gets a spawn branch in this phase. Hermes's CLI resume syntax has never been verified, and Kimi Code is not online — inventing either command would produce an endpoint that silently launches the wrong thing. Both degrade with `not_resumable_platform`, which is exactly the behavior the spec's degrade branch exists for.
+**Resume-command table — all three platforms, verified 2026-08-09.** An earlier draft gave a spawn branch only to `claude_code` and degraded the other two, because their resume syntax was unverified. It has since been verified directly against the installed binaries:
+
+| Platform | Resume command | Herdr `agent.start` kind | Verified by |
+|---|---|---|---|
+| `claude_code` | `claude --resume <id>` | `claude` | Established in Phase 1 |
+| `hermes` | `hermes --resume <id>` | `hermes` | `hermes --help`: "`--resume SESSION, -r SESSION` — Resume a previous session by ID or title" |
+| `kimi_code` | `kimi --session <id>` | `kimi` | `kimi --help`: "`-S, --session [id]` — Resume a session. With ID: resume that session." |
+
+**The id spaces line up, which is the part that actually matters.** Kimi's stored session directories are named `session_<uuid>` (`~/.kimi-code/sessions/wd_<slug>_<hash>/session_5890019f-…`), byte-identical to the `external_session_id` our capture hook records — so the stored id is passed through verbatim, with no prefix stripping. Do **not** add any id normalization; if resume fails, the fix is in the command form, not in the id.
+
+`not_resumable_platform` remains in the code as a safety net for a platform added to the DB's CHECK constraint without a matching resume spec. No live platform reaches it today.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1002,15 +1019,55 @@ describe('resolveAttach', () => {
     });
   });
 
-  it('degrades for a hermes session with no command', () => {
+  it('spawns a resume pane for an ended hermes session', () => {
     const plan = resolveAttach({
-      session: session({ platform: 'hermes' }),
+      session: session({ platform: 'hermes', external_session_id: '20260808_132446_ca4215' }),
       panes: [],
       localHost: 'vps8-core',
     });
 
-    // Pins the deliberate omission: Hermes resume syntax is unverified, so
-    // the endpoint must say "I don't know" rather than guess a command.
+    expect(plan).toEqual({
+      kind: 'spawn',
+      cwd: '/home/john/dev/wayfinder',
+      agent_kind: 'hermes',
+      args: ['--resume', '20260808_132446_ca4215'],
+      command: 'hermes --resume 20260808_132446_ca4215',
+    });
+  });
+
+  it('spawns a resume pane for an ended kimi_code session, id passed through verbatim', () => {
+    const plan = resolveAttach({
+      session: session({
+        platform: 'kimi_code',
+        external_session_id: 'session_5890019f-d377-4187-b14a-2fd406dd32c7',
+      }),
+      panes: [],
+      localHost: 'vps8-core',
+    });
+
+    // Pins the id-passthrough rule: Kimi's own session directories are named
+    // `session_<uuid>`, so the `session_` prefix is PART of the id, not noise
+    // to be stripped. Stripping it would produce a command that fails to find
+    // the session while looking perfectly reasonable.
+    expect(plan).toEqual({
+      kind: 'spawn',
+      cwd: '/home/john/dev/wayfinder',
+      agent_kind: 'kimi',
+      args: ['--session', 'session_5890019f-d377-4187-b14a-2fd406dd32c7'],
+      command: 'kimi --session session_5890019f-d377-4187-b14a-2fd406dd32c7',
+    });
+  });
+
+  it('degrades with no command for a platform that has no resume spec', () => {
+    const plan = resolveAttach({
+      // Cast: the DB CHECK constraint allows only the three real platforms, so
+      // this branch is a safety net for a fourth being added without a resume
+      // spec. Pins that the net exists rather than crashing on a lookup miss.
+      session: session({ platform: 'future_agent' as unknown as SessionRow['platform'] }),
+      panes: [],
+      localHost: 'vps8-core',
+    });
+
     expect(plan).toEqual({
       kind: 'degrade',
       reason: 'not_resumable_platform',
@@ -1086,9 +1143,14 @@ export type AttachPlan =
   | { kind: 'spawn'; cwd: string; agent_kind: string; args: string[]; command: string }
   | { kind: 'degrade'; reason: DegradeReason; command: string | null };
 
-// Only claude_code is resumable in Phase 2.a. Hermes's CLI resume syntax is
-// unverified and Kimi Code is not online (spec: Open Question 2) — guessing
-// either would produce an endpoint that confidently launches the wrong thing.
+// All three platforms are resumable, each verified against its installed
+// binary's --help on 2026-08-09. `agentKind` is the Herdr agent manifest name
+// (agent.start's `kind`), which is NOT always the same string as our platform
+// column — claude_code -> claude, kimi_code -> kimi.
+//
+// The external_session_id is passed through verbatim in every case. Kimi's own
+// session directories are named `session_<uuid>`, so its `session_` prefix is
+// part of the id, not a wrapper to strip.
 interface ResumeSpec {
   agentKind: string;
   args: (externalSessionId: string) => string[];
@@ -1100,6 +1162,16 @@ const RESUME: Partial<Record<Platform, ResumeSpec>> = {
     agentKind: 'claude',
     args: (id) => ['--resume', id],
     command: (id) => `claude --resume ${id}`,
+  },
+  hermes: {
+    agentKind: 'hermes',
+    args: (id) => ['--resume', id],
+    command: (id) => `hermes --resume ${id}`,
+  },
+  kimi_code: {
+    agentKind: 'kimi',
+    args: (id) => ['--session', id],
+    command: (id) => `kimi --session ${id}`,
   },
 };
 
@@ -1151,7 +1223,7 @@ export function resolveAttach(input: {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx vitest run test/attach.test.ts`
-Expected: PASS, 9 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1579,19 +1651,46 @@ Expected: `{"action":"spawned",...}` and a new Herdr tab appears running `claude
 
 **If this misbehaves, stop and report rather than iterating.** It is the one branch that mutates John's live workspace.
 
-- [ ] **Step 5: Verify the degrade branch**
+- [ ] **Step 5: Verify resume for Hermes and Kimi Code**
+
+These two commands were verified from `--help` output, never executed through Herdr. Run each and watch the spawned pane:
 
 ```bash
-ROW=$(psql "$DATABASE_URL" -tAc "SELECT id FROM _sessionminder.sessions WHERE platform='hermes' ORDER BY started_at DESC LIMIT 1;")
+# Kimi — the one captured kimi_code row
+ROW=$(psql "$DATABASE_URL" -tAc "SELECT id FROM _sessionminder.sessions WHERE platform='kimi_code' ORDER BY started_at DESC LIMIT 1;")
+curl -s -X POST "http://vps8-core:3000/api/sessions/$ROW/attach" \
+  -H "Authorization: Bearer $SESSION_MINDER_TOKEN" | jq
+
+# Hermes — most recent non-noise session
+ROW=$(psql "$DATABASE_URL" -tAc "SELECT id FROM _sessionminder.sessions WHERE platform='hermes' AND noise_flag = false AND project_path IS NOT NULL ORDER BY started_at DESC LIMIT 1;")
 curl -s -X POST "http://vps8-core:3000/api/sessions/$ROW/attach" \
   -H "Authorization: Bearer $SESSION_MINDER_TOKEN" | jq
 ```
 
-Expected: `{"action":"degraded","reason":"not_resumable_platform","command":null}`.
+Expected: `{"action":"spawned",...}` for both, and each new pane loads the prior conversation rather than starting fresh.
+
+**Two things to watch, and stop-and-report if either bites:**
+- **Kimi's `--session [id]` takes an *optional* value.** If the spawned pane opens Kimi's interactive session picker instead of resuming directly, the argument was parsed as a bare flag — switch `args` to the single-element equals form `['--session=<id>']` in `src/attach.ts` and re-run.
+- **Hermes sessions that originated on Telegram or cron** have no meaningful terminal context. Resuming one in a pane is not wrong, but it may be useless. That is a Phase 2.b presentation question (which sessions to offer an attach button for), not a bug in this endpoint — note what you see and move on.
+
+- [ ] **Step 5a: Verify the true degrade branch**
+
+With Herdr's socket unreachable, every platform must still answer:
+
+```bash
+SESSION_MINDER_HERDR_SOCKET=/nonexistent/herdr.sock npx tsx -e "
+import('./src/attach.ts').then(m => console.log(m.resolveAttach({
+  session: {id:'x', platform:'claude_code', external_session_id:'abc',
+            host:'vps8-core', project_path:'/tmp', ended_at:new Date()},
+  panes: null, localHost: 'vps8-core'
+})))"
+```
+
+Expected: `{ kind: 'degrade', reason: 'herdr_unreachable', command: 'claude --resume abc' }`.
 
 - [ ] **Step 6: Update `.docs/status.md`**
 
-Rewrite the "What's next?" section to state that Phase 2.a is shipped, that the attach contract exists at `POST /api/sessions/:id/attach` with its three actions, and that Phase 2.b (the dashboard) is now the next conversation with no remaining gate. Record the two knowing omissions: Hermes/Kimi resume commands are unverified and degrade by design, and Kimi hooks were not given Herdr enrichment.
+Rewrite the "What's next?" section to state that Phase 2.a is shipped, that the attach contract exists at `POST /api/sessions/:id/attach` with its three actions, and that Phase 2.b (the dashboard) is now the next conversation with no remaining gate. Record that all three platforms resume (with the verified command for each), and strike the "Kimi Code verification" item from "What's unresolved" — Phase 1's Task 9 Step 5 is discharged by the captured `kimi_code` row.
 
 - [ ] **Step 7: Commit**
 
@@ -1606,10 +1705,11 @@ git commit -m "chore: deploy Phase 2.a attach layer and record verification"
 
 **Spec coverage.** 2.a scope step 1 (spike) — already done, recorded in the spec, not a task here. Step 2 (capture enrichment into `raw_metadata.herdr`, no schema change) — Tasks 1–2. Step 3 (attach contract, three branches) — Tasks 3–5. Design guards: thin layer behind session-minder's API (only `src/herdr.ts` and the route executor know Herdr); no persistent listener (one-shot connections, no `events.subscribe`); server locality (the `foreign_host` degrade). Testing section: "integration tests for the attach endpoint's three branches with the Herdr socket faked" — Task 5; "the spike itself is manual verification against a real Herdr server" — Task 6.
 
-**Deliberate omissions, all flagged in-plan rather than silently dropped:**
-1. Kimi Code hooks get no Herdr enrichment (Kimi is not online; unverifiable).
-2. Hermes and Kimi have no resume command — they degrade with `not_resumable_platform` rather than a guessed command.
-3. Live-status badges are Phase 2.b; this phase exposes the join, not a list endpoint.
+**Deliberate omissions, flagged in-plan rather than silently dropped:**
+1. Live-status badges are Phase 2.b; this phase exposes the join, not a list endpoint.
+2. No Hermes or Kimi pane has yet been *observed* reporting `agent_session` on the socket — both integrations' hook scripts forward `session_id` correctly (verified by reading them), and the Claude equivalent is confirmed working live, so this is inference plus a working analogue rather than a hole. It affects only the focus branch; the spawn branch is unaffected. Task 6 Step 3 will confirm or refute it in passing.
+
+*(Two omissions from the first draft — no Kimi hook enrichment, and no Hermes/Kimi resume command — were removed on 2026-08-09 once the Kimi integration was installed and all three resume commands were verified. See Task 4's resume-command table.)*
 
 **Type consistency.** `HerdrPane` / `HerdrAgentSession` / `HerdrUnreachableError` / `createHerdrClient` / `discoverHerdrSocket` are defined in Task 3 and used with those exact names in Tasks 4 and 5. `SessionRow` and `resolveAttach` are defined in Task 4 and consumed in Task 5. `AttachPlan.kind` values (`focus` / `spawn` / `degrade`) map to response `action` values (`focused` / `spawned` / `degraded`) — deliberately different words, converted only in the route.
 

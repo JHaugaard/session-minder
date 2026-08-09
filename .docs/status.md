@@ -43,10 +43,9 @@ plan's 62 steps are checked off.
   byte-identical to our `external_session_id`. Full findings in the spec's
   "Spike results". What remains for 2.a is implementation: capture
   enrichment into `raw_metadata.herdr`, then the attach endpoint.
-- **Kimi Code verification** is the one unchecked plan step (Task 9, Step 5),
-  deliberately deferred until Kimi Code is brought online for real project use.
-  The scripts are written and script-level verified; only the live end-to-end
-  check is outstanding.
+- ~~**Kimi Code verification**~~ — discharged 2026-08-09. Phase 1's one
+  unchecked step (Task 9, Step 5) is now done: a real `kimi_code` session was
+  captured start-to-end (`session_5890019f-…`). All three platforms capture.
 - **Noise thresholds** (<60s duration, <3 messages) are still the original
   conservative guess. There's now real data to tune against: 12 of 33 sessions
   flagged. Worth a look before the dashboard makes them visible.
