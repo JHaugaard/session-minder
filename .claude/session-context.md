@@ -48,8 +48,35 @@ this session's findings supersede that state.
 ## Key Decisions
 
 - Treat Phase 2.a step 1 (spike) as **done**; findings above are the record.
-- Remaining unknown to close opportunistically: Hermes CLI-pane `agent_session`
-  population.
+- Kimi Code brought into Phase 2.a as a first-class platform (2026-08-09) after
+  its Herdr integration was installed and capture was live-verified. This
+  discharged Phase 1's one skipped step (Task 9, Step 5).
+- **Retracted** the earlier "Hermes and Kimi are not resumable, degrade by
+  design" call. All three resume commands verified against the installed
+  binaries: `claude --resume`, `hermes --resume`, `kimi --session`.
+- Build deferred to a fresh session by John's explicit request; handoff prompt
+  written at the end of this session.
+- Remaining unknown, non-blocking: no Hermes or Kimi pane observed reporting
+  `agent_session` yet (both hook scripts forward it correctly by inspection).
+
+## Session Status
+
+Completed: 2026-08-09
+Servers cleaned: none — no MCP servers were enabled this session (tool count
+unchanged throughout).
+Honcho curation: 3 items written as `peer=john` in session
+`session-minder-phase2a-planning` — (1) the Herdr integration surface is closed,
+all three installed with append-not-replace verified each time; (2) John
+deliberately separates the planning session from the build session, with the
+pause-and-hand-off shape stated in his own words; (3) the "would this simplify
+things?" instinct and its generalizable lesson — verify against the running
+system rather than the docs. Deduped by live search first; no existing items
+covered these. Rejected as repo-recorded or transient: the socket-protocol
+findings, the string-`id` trap, the resume-command table, and all commit
+mechanics — those live in the spec and plan.
+
+Commits this session: `0bf0e56` (spec + spike results), `8c0cb62` (Phase 2.a
+plan), `4621a36` (Kimi as first-class platform).
 
 ## Notes
 
