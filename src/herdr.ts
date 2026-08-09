@@ -8,7 +8,9 @@ import { access, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const REQUEST_TIMEOUT_MS = 2000;
+// Exported so tests can assert against the real values instead of
+// hand-copied literals that can drift silently out of sync.
+export const REQUEST_TIMEOUT_MS = 2000;
 
 // `agent.start` doesn't return when the process launches — Herdr blocks the
 // response until the agent is detected and ready for input. Measured live
@@ -16,7 +18,7 @@ const REQUEST_TIMEOUT_MS = 2000;
 // under 2s, which is the only reason their spawns ever worked under the flat
 // 2s default. 15s gives headroom for a slow boot without hanging the HTTP
 // request as long as Herdr's own 30s ceiling would.
-const AGENT_START_TIMEOUT_MS = 15000;
+export const AGENT_START_TIMEOUT_MS = 15000;
 
 export interface HerdrAgentSession {
   source: string;
@@ -29,9 +31,12 @@ export interface HerdrPane {
   pane_id: string;
   workspace_id: string;
   tab_id: string;
-  // The wire OMITS these keys entirely (not `null`) when Herdr has nothing to
-  // report — confirmed against 0.7.5: a pane with no attached agent sends no
-  // `agent`/`agent_session` key at all. Optional, not nullable.
+  // Confirmed against 0.7.5, live: `cwd` was PRESENT on all 8 observed panes.
+  // `agent` and `agent_session` are the keys the wire actually OMITS (not
+  // `null`) when Herdr has nothing to report — a pane with no attached agent
+  // sends no `agent`/`agent_session` key at all. `cwd` stays optional too
+  // (owner's ruling), but that's defensive, not evidence-backed like the
+  // other two.
   cwd?: string | null;
   agent?: string | null;
   agent_session?: HerdrAgentSession;
@@ -61,6 +66,7 @@ export interface HerdrClient {
     name: string;
     args: string[];
   }): Promise<{ argv: string[] }>;
+  closeTab(tabId: string): Promise<void>;
 }
 
 function request(
@@ -168,6 +174,10 @@ export function createHerdrClient(socketPath: string): HerdrClient {
         AGENT_START_TIMEOUT_MS
       );
       return { argv: (result.argv ?? []) as string[] };
+    },
+    async closeTab(tabId) {
+      // Verified live: `herdr tab close <tab_id>` returns `{"result":{"type":"ok"}}`.
+      await request(socketPath, 'tab.close', { tab_id: tabId });
     },
   };
 }

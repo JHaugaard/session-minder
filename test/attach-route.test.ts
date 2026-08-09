@@ -9,6 +9,7 @@ const { mockSql, mockClient, mockDiscover } = vi.hoisted(() => ({
     focusPane: vi.fn(),
     createTab: vi.fn(),
     startAgent: vi.fn(),
+    closeTab: vi.fn(),
   },
   mockDiscover: vi.fn(),
 }));
@@ -91,6 +92,16 @@ describe('POST /api/sessions/:id/attach', () => {
     // it would satisfy a body-shape assertion while doing nothing.
     expect(mockClient.focusPane).toHaveBeenCalledWith('w9:p1');
     expect(mockClient.createTab).not.toHaveBeenCalled();
+
+    // Pins the route's own SELECT, in the same style as test/capture.test.ts.
+    // mockSql returns a hand-built row regardless of the query text, so
+    // dropping a column here (project_path, most critically) would pass
+    // every other route test while every spawn degraded with
+    // no_project_path in production.
+    const [strings] = mockSql.mock.calls[0];
+    const queryText = strings.join('?');
+    expect(queryText).toMatch(/_sessionminder\.sessions/);
+    expect(queryText).toMatch(/project_path/);
   });
 
   it('spawns a tab and starts the agent for an ended session', async () => {
@@ -235,7 +246,26 @@ describe('POST /api/sessions/:id/attach', () => {
     expect(res.json().command).toBe('claude --resume abc-123');
   });
 
-  it('degrades for a session captured on another host without touching Herdr', async () => {
+  it('closes the orphaned tab when startAgent fails after createTab succeeded', async () => {
+    const { HerdrUnreachableError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
+    mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('agent_name_taken'));
+
+    const res = await post();
+
+    // Pins the leak fix directly: Herdr never reports agent_session for
+    // Hermes panes, so every re-attach to a live Hermes session takes this
+    // spawn branch, hits agent_name_taken, and — without this cleanup —
+    // leaves the tab createTab() just created permanently orphaned.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().action).toBe('degraded');
+    expect(mockClient.closeTab).toHaveBeenCalledWith('w9:t2');
+  });
+
+  it('degrades for a session captured on another host without ever focusing or spawning', async () => {
     mockSql.mockResolvedValueOnce([row({ host: 'mbp' })]);
     mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
     mockClient.listPanes.mockResolvedValueOnce([]);

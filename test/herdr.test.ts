@@ -1,10 +1,15 @@
 // test/herdr.test.ts
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import net from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHerdrClient, HerdrUnreachableError } from '../src/herdr.js';
+import {
+  createHerdrClient,
+  discoverHerdrSocket,
+  HerdrUnreachableError,
+  AGENT_START_TIMEOUT_MS,
+} from '../src/herdr.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -173,6 +178,7 @@ describe('Herdr socket client', () => {
     expect(received[0].params).toMatchObject({
       pane_id: 'w9:p3',
       kind: 'claude',
+      name: 'session-minder-resume',
       args: ['--resume', 'abc'],
     });
     expect(result.argv).toEqual(['claude', '--resume', 'abc']);
@@ -262,14 +268,151 @@ describe('Herdr socket client', () => {
       args: [],
     });
 
-    // Mirrors AGENT_START_TIMEOUT_MS in src/herdr.ts (not exported). Pins the
-    // relationship that matters, not the literal number: Herdr's own
+    // Asserts the real exported constant, not a hand-copied literal — a
+    // hand-copied 15000 would stay green even if AGENT_START_TIMEOUT_MS were
+    // lowered to something that breaks the invariant this pins: Herdr's own
     // readiness timeout must fire strictly before our socket gives up, so a
     // genuinely slow agent surfaces as a real Herdr error rather than our
     // opaque "agent.start timed out".
-    const ourAgentStartBudgetMs = 15000;
-
     expect(received[0].params.timeout_ms).toBeDefined();
-    expect(received[0].params.timeout_ms).toBeLessThan(ourAgentStartBudgetMs);
+    expect(received[0].params.timeout_ms).toBeLessThan(AGENT_START_TIMEOUT_MS);
+  });
+
+  it('reassembles a multi-byte UTF-8 character split across chunk boundaries', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'herdr-test-'));
+    const socketPath = join(dir, 'herdr.sock');
+
+    const responseObj = {
+      id: '1',
+      result: {
+        type: 'pane_list',
+        panes: [
+          {
+            pane_id: 'w9:p1',
+            workspace_id: 'w9',
+            tab_id: 'w9:t1',
+            cwd: '/home/john/dev/café',
+          },
+        ],
+      },
+    };
+    const jsonStr = JSON.stringify(responseObj) + '\n';
+    const eIndex = jsonStr.indexOf('é');
+    const bytesBeforeE = Buffer.byteLength(jsonStr.slice(0, eIndex), 'utf8');
+    const payload = Buffer.from(jsonStr, 'utf8');
+    // Split between the two bytes of é's UTF-8 encoding (0xC3 0xA9) — this is
+    // exactly the boundary that corrupts if a chunk is decoded with
+    // `chunk.toString()` independently of the chunk before it. Reverting
+    // `buf += String(chunk)` (which relies on `setEncoding('utf8')` to hold
+    // the dangling byte until the rest arrives) to per-chunk `.toString()`
+    // must fail this test.
+    const splitIndex = bytesBeforeE + 1;
+    const first = payload.subarray(0, splitIndex);
+    const second = payload.subarray(splitIndex);
+
+    const server = net.createServer((conn) => {
+      conn.on('data', () => {
+        conn.write(first);
+        // A same-tick second write (even via setImmediate) can still coalesce
+        // with the first into a single 'data' event on a local Unix socket,
+        // which would make this test pass whether or not the split-handling
+        // fix is present. A short delay forces two genuinely separate reads.
+        setTimeout(() => conn.write(second), 20);
+      });
+    });
+    server.listen(socketPath);
+    cleanups.push(() => {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    const panes = await createHerdrClient(socketPath).listPanes();
+
+    expect(panes[0].cwd).toBe('/home/john/dev/café');
+  });
+});
+
+describe('discoverHerdrSocket', () => {
+  const savedEnv: { home?: string; override?: string } = {};
+
+  beforeEach(() => {
+    savedEnv.home = process.env.HOME;
+    savedEnv.override = process.env.SESSION_MINDER_HERDR_SOCKET;
+    delete process.env.SESSION_MINDER_HERDR_SOCKET;
+  });
+
+  afterEach(() => {
+    if (savedEnv.home === undefined) delete process.env.HOME;
+    else process.env.HOME = savedEnv.home;
+    if (savedEnv.override === undefined) delete process.env.SESSION_MINDER_HERDR_SOCKET;
+    else process.env.SESSION_MINDER_HERDR_SOCKET = savedEnv.override;
+  });
+
+  // Answers `ping` (and anything else) with a plain ok result — enough for
+  // discoverHerdrSocket's probe to treat the candidate as live.
+  function liveResponderAt(socketPath: string) {
+    const server = net.createServer((conn) => {
+      conn.on('data', () => {
+        conn.write(JSON.stringify({ id: '1', result: { type: 'ok' } }) + '\n');
+      });
+    });
+    server.listen(socketPath);
+    cleanups.push(() => server.close());
+  }
+
+  it('returns the SESSION_MINDER_HERDR_SOCKET override as-is, without probing it', async () => {
+    process.env.SESSION_MINDER_HERDR_SOCKET = '/wherever/the/user/pinned/herdr.sock';
+
+    const found = await discoverHerdrSocket();
+
+    expect(found).toBe('/wherever/the/user/pinned/herdr.sock');
+  });
+
+  it('finds a live socket in ~/.config/herdr/sessions/<name>/herdr.sock', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const sessionDir = join(home, '.config', 'herdr', 'sessions', 'herdr-lab');
+    mkdirSync(sessionDir, { recursive: true });
+    const socketPath = join(sessionDir, 'herdr.sock');
+    liveResponderAt(socketPath);
+    process.env.HOME = home;
+
+    const found = await discoverHerdrSocket();
+
+    expect(found).toBe(socketPath);
+  });
+
+  it('skips a stale socket FILE with no listener and returns the live candidate', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const staleDir = join(home, '.config', 'herdr', 'sessions', 'stale-session');
+    const liveDir = join(home, '.config', 'herdr', 'sessions', 'live-session');
+    mkdirSync(staleDir, { recursive: true });
+    mkdirSync(liveDir, { recursive: true });
+    // A plain file, not a socket — nothing is listening on it. Proves the
+    // ping probe (not mere `access()` existence) is what decides: an
+    // implementation that only checked existence would wrongly return this.
+    const stalePath = join(staleDir, 'herdr.sock');
+    writeFileSync(stalePath, '');
+    const livePath = join(liveDir, 'herdr.sock');
+    liveResponderAt(livePath);
+    process.env.HOME = home;
+
+    const found = await discoverHerdrSocket();
+
+    expect(found).toBe(livePath);
+  });
+
+  it('returns null when every candidate is dead', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    const deadDir = join(home, '.config', 'herdr', 'sessions', 'dead-session');
+    mkdirSync(deadDir, { recursive: true });
+    writeFileSync(join(deadDir, 'herdr.sock'), '');
+    process.env.HOME = home;
+
+    const found = await discoverHerdrSocket();
+
+    expect(found).toBeNull();
   });
 });

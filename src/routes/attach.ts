@@ -18,7 +18,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // SESSION_MINDER_HOST_NAME is set in the systemd unit; hostname() is only a
 // last-resort fallback and will simply degrade if it disagrees.
 function localHost(): string {
-  return process.env.SESSION_MINDER_HOST_NAME ?? hostname();
+  // `||`, not `??`: .env.example sets values empty by convention, and a blank
+  // SESSION_MINDER_HOST_NAME= would make `??` return '' (an empty string is
+  // not nullish), so every attach would degrade with foreign_host.
+  return process.env.SESSION_MINDER_HOST_NAME || hostname();
 }
 
 export function registerAttachRoute(app: FastifyInstance): void {
@@ -44,6 +47,9 @@ export function registerAttachRoute(app: FastifyInstance): void {
       }
 
       const socketPath = await discoverHerdrSocket();
+      if (!socketPath) {
+        request.log.warn('herdr socket discovery found no live candidate; degrading');
+      }
       const client = socketPath ? createHerdrClient(socketPath) : null;
 
       let panes: HerdrPane[] | null = null;
@@ -52,14 +58,18 @@ export function registerAttachRoute(app: FastifyInstance): void {
           panes = await client.listPanes();
         } catch (err) {
           if (!(err instanceof HerdrUnreachableError)) throw err;
+          request.log.warn({ err }, 'herdr listPanes failed; degrading');
           panes = null;
         }
       }
 
       const plan = resolveAttach({ session, panes, localHost: localHost() });
 
-      try {
-        if (plan.kind === 'focus') {
+      // Herdr can stop between listPanes() and the action below. Both
+      // branches fall through to the degrade answer rather than failing a
+      // request the user can still satisfy by copying the command.
+      if (plan.kind === 'focus') {
+        try {
           await client!.focusPane(plan.pane_id);
           reply.send({
             action: 'focused',
@@ -67,13 +77,23 @@ export function registerAttachRoute(app: FastifyInstance): void {
             workspace_id: plan.workspace_id,
           });
           return;
+        } catch (err) {
+          if (!(err instanceof HerdrUnreachableError)) throw err;
+          request.log.warn({ err }, 'herdr focusPane failed; degrading');
+          reply.send({ action: 'degraded', ...stripKind(degradeFallback(session)) });
+          return;
         }
+      }
 
-        if (plan.kind === 'spawn') {
+      if (plan.kind === 'spawn') {
+        // Tracked so the catch below can clean up an orphaned tab — see B4.
+        let tabId: string | undefined;
+        try {
           const tab = await client!.createTab({
             cwd: plan.cwd,
             label: 'resume',
           });
+          tabId = tab.tabId;
           const started = await client!.startAgent({
             paneId: tab.paneId,
             kind: plan.agent_kind,
@@ -94,32 +114,48 @@ export function registerAttachRoute(app: FastifyInstance): void {
             argv: started.argv,
           });
           return;
+        } catch (err) {
+          if (!(err instanceof HerdrUnreachableError)) throw err;
+          request.log.warn({ err }, 'herdr spawn failed; degrading');
+          // Herdr never reports agent_session for Hermes panes (see
+          // src/herdr.ts), so every re-attach to a LIVE Hermes session takes
+          // this spawn branch and hits agent_name_taken on the identical
+          // derived name — createTab already succeeded by that point, so
+          // without this cleanup the tab leaks permanently on every such
+          // re-attach. Best-effort only: a cleanup failure must never turn a
+          // degrade into a 500.
+          if (tabId) {
+            try {
+              await client!.closeTab(tabId);
+            } catch {
+              // Swallowed intentionally — see comment above.
+            }
+          }
+          reply.send({ action: 'degraded', ...stripKind(degradeFallback(session)) });
+          return;
         }
-      } catch (err) {
-        // Herdr can stop between listPanes() and the action. Fall through to
-        // the degrade answer rather than failing a request the user can still
-        // satisfy by copying the command.
-        if (!(err instanceof HerdrUnreachableError)) throw err;
-        const fallback = resolveAttach({
-          session,
-          panes: null,
-          localHost: localHost(),
-        });
-        // Structurally guaranteed by resolveAttach (panes: null always yields
-        // a degrade plan — see Task 5's non-null-assertion proof), but the
-        // static type is still the full AttachPlan union. Narrow explicitly
-        // rather than casting, so a future change to that contract fails
-        // loudly here instead of leaking spawn/focus fields into the body.
-        if (fallback.kind !== 'degrade') {
-          throw new Error('resolveAttach returned a non-degrade plan for panes: null');
-        }
-        reply.send({ action: 'degraded', ...stripKind(fallback) });
-        return;
       }
 
       reply.send({ action: 'degraded', ...stripKind(plan) });
     }
   );
+}
+
+function degradeFallback(session: SessionRow) {
+  const fallback = resolveAttach({
+    session,
+    panes: null,
+    localHost: localHost(),
+  });
+  // Structurally guaranteed by resolveAttach (panes: null always yields a
+  // degrade plan — see Task 5's non-null-assertion proof), but the static
+  // type is still the full AttachPlan union. Narrow explicitly rather than
+  // casting, so a future change to that contract fails loudly here instead
+  // of leaking spawn/focus fields into the body.
+  if (fallback.kind !== 'degrade') {
+    throw new Error('resolveAttach returned a non-degrade plan for panes: null');
+  }
+  return fallback;
 }
 
 function stripKind(plan: Extract<AttachPlan, { kind: 'degrade' }>) {

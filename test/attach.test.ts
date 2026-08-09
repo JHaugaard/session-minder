@@ -186,7 +186,7 @@ describe('resolveAttach', () => {
     });
   });
 
-  it('focuses a live session even when it is captured on a foreign host? no — host wins', () => {
+  it('runs the host guard before the pane join', () => {
     const plan = resolveAttach({
       session: session({ host: 'mini' }),
       panes: [pane()],

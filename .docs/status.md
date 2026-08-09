@@ -23,12 +23,15 @@ What's live right now:
   it isn't, it opens a fresh pane that resumes it; and if neither is possible,
   it hands you back the exact command to paste yourself. That last case isn't
   a failure — it's the fallback every session gets, never a dead end.
-- All three tools were proven end to end against the real system: Claude,
-  Kimi, and Hermes each spawned a genuinely resumed session through the new
-  feature, confirmed by reading what actually showed up in the pane, not by
-  trusting what the server reported. Claude and Kimi were further proven
-  re-findable — attaching a second time switches to the existing pane instead
-  of opening a duplicate.
+- Claude and Hermes were proven end to end against the real system: each
+  spawned a genuinely resumed session through the new feature, confirmed by
+  reading what actually showed up in the pane, not by trusting what the
+  server reported. Kimi's evidence is weaker and different — a spawn attempt
+  stalled at its own "Trust this folder?" gate and never reached a resumed
+  pane, so the only positive signal for Kimi is Herdr reporting the session
+  id present (`agent_session`), not confirmed pane content. Claude was
+  further proven re-findable — attaching a second time switches to the
+  existing pane instead of opening a duplicate.
 - Only 2 of the 50 stored sessions carry the Herdr pane details the feature
   relies on. That's expected — it's only recorded for sessions started after
   today's deploy — and the number climbs on its own as you keep working.
@@ -60,9 +63,14 @@ come back.
 - **Hermes sessions can only ever be spawned fresh, never re-focused.** Herdr
   doesn't report a session id for Hermes panes — confirmed by watching a live
   one, not assumed — so a running Hermes session can't be recognized as
-  "already open." Attaching to one always opens a second pane. Claude and Kimi
-  don't have this problem. This should shape what the dashboard offers for
-  Hermes.
+  "already open." The first attach to an ended Hermes session opens a
+  genuinely new, working pane. Attaching again while that session is still
+  live doesn't open a second working pane, though — Herdr rejects the second
+  spawn because the derived agent name is already taken by the first, and the
+  request degrades. The tab that failed attempt briefly creates is now closed
+  automatically instead of leaking (fixed alongside this ledger entry). Claude
+  and Kimi don't have this problem. This should shape what the dashboard
+  offers for Hermes.
 - **A spawned pane can land on a prompt instead of a working session.** A test
   spawn of Kimi stopped at its own "Trust this folder?" gate and sat there
   waiting for a keystroke. Not a bug in this code, but the dashboard shouldn't

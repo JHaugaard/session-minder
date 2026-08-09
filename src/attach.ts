@@ -12,8 +12,8 @@ export interface SessionRow {
   external_session_id: string;
   host: string;
   project_path: string | null;
-  // Carried through for the caller (Task 5's route selects it for display) —
-  // deliberately NOT a branch input here. "Live" is defined by a pane match,
+  // Selected only to satisfy this interface; no consumer branches on it yet.
+  // Deliberately NOT a branch input here. "Live" is defined by a pane match,
   // not by `ended_at IS NULL`. Accepted consequence: a session still running
   // outside any Herdr pane (e.g. a detached process) takes the spawn branch.
   ended_at: Date | null;
