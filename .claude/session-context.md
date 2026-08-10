@@ -1,88 +1,82 @@
 # Session Context
 
 ## Current Focus
+**phase-2b-plan** — the Phase 2.b design/planning session for the session-minder
+dashboard. Entry point: `.docs/phase2b-prompt.md` (pointed to by `.docs/status.md`).
 
-Push session-minder forward now that the Herdr gate has lifted. The Herdr Claude
-Code and Hermes Agent integrations are installed (`herdr integration status`:
-both `current`), which was the blocker on **Phase 2.a — Herdr integration
-layer** per `docs/superpowers/specs/2026-08-03-session-minder-design.md`.
+Ratified session shape (two-gate): brainstorm/design → John ratifies → write the
+implementation plan → HARD STOP → build happens in a separate session. No code this
+session.
 
-## Spike results (Phase 2.a, step 1) — verified live this session
+## Honcho Context (peer=john)
 
-The spike the spec called for is effectively complete; all checks were run
-read-only from inside Herdr pane `w9` (session `herdr-4up`).
+**Binding constraints from Phase 2.a (settled, not up for re-litigation):**
+- The dashboard is a client of the deployed `POST /api/sessions/:id/attach` contract
+  (`focused` / `spawned` / `degraded`; `degraded` is a 200 with a manual recovery
+  path, not an error). It should not know Herdr internals.
+- Hermes is spawn-only: Herdr never reports `agent_session` for Hermes panes, so an
+  existing Hermes session can never be recognised and focused. The UI must not offer
+  a focus action Hermes can't perform. Claude and Kimi are unaffected.
+- `spawned` ≠ usable — a spawned pane can stop at an interactive gate (observed:
+  Kimi's "Trust this folder?" prompt). The dashboard needs an honest treatment of
+  that intermediate state.
+- First 2.b item: split `HerdrUnreachableError` — it conflates "Herdr not running"
+  with "Herdr refused the request," which made all three Phase 2.a live defects
+  report a misleading cause.
+- Process lesson (binding for the plan): eleven real defects passed a green suite in
+  2.a; all were found by mutation testing or live verification, none by reading code.
 
-- **Hook coexistence — SAFE.** Herdr's Claude installer *appended*: `~/.claude/settings.json`
-  keeps session-minder's `SessionStart` + `SessionEnd` and adds a second
-  `SessionStart` entry (`herdr-agent-state.sh session`, timeout 10). Hermes has
-  zero collision — session-minder uses `hooks.on_session_start/on_session_end`,
-  Herdr uses the plugin system (`plugins.enabled: herdr-agent-state`).
-- **Coexistence confirmed behaviorally.** 4 sessions captured since the Herdr
-  install (12:45), across both platforms, including this one.
-- **`HERDR_*` env vars ARE visible** to processes inside a pane:
-  `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`, `HERDR_SESSION`,
-  `HERDR_SOCKET_PATH`, `HERDR_ENV=1`. Capture enrichment needs no socket call.
-- **The join key is real.** `pane.list` on pane `w9` returns
-  `agent_session: {kind: "id", value: "8f7f70ae-9054-45b6-9f07-23e66f3a26b4"}` —
-  byte-identical to the `external_session_id` in `_sessionminder.sessions` for
-  this session. This was the load-bearing unknown.
-- **Hermes side reads plausible but unobserved live** — the Herdr Hermes plugin
-  does report `agent_session_id` from its `session_id` kwarg
-  (`~/.hermes/plugins/herdr-agent-state/__init__.py`), but no Hermes pane has
-  yet populated `agent_session`.
-- **New trap for implementation:** the socket API rejects an integer `id`
-  (`invalid type: integer 1, expected a string`). Request `id` must be a
-  **string**. Not stated in the docs section the spec cites.
+**Open design questions the session exists to decide (ask before proposing):**
+1. What each session row/card shows (identity, platform, project, recency, state,
+   attach affordance).
+2. Which actions are offered per platform and state (focus vs spawn vs manual
+   recovery; no false focus for Hermes).
+3. How an interactive spawn gate is represented.
+4. How stale/pruned/non-resumable sessions appear (some platforms prune history).
+5. Whether a readiness/state model beyond the three attach outcomes is needed.
+6. The error taxonomy and user-facing treatment after the Herdr error split.
+- The dashboard stack is deliberately undecided — do not pre-pick it.
 
-## Honcho Context
+**Rules for how this session runs:**
+- Brainstorm first; ask questions before proposing solutions.
+- Plan only after John ratifies the design; build deferred to a separate session.
+- The plan states, per test, the rule pinned and the specific mutant/wrong
+  implementation that must fail — it does not hand over test bodies.
+- Live verification matters for anything crossing the Herdr boundary; sudo stays
+  hard-gated; one retry max on a failed live spawn; show diagnosis before any code
+  change from a live finding.
 
-Queried `peer=john` (Dialectic, low reasoning). Consistent with the repo record:
-Phase 2 is an integration problem, not a UI problem; the Herdr Claude
-integration is *required* to populate `agent_session` ("no join key" without
-it); the recorded gate was workspace-per-project comfort → back up
-`settings.json` → inspect installer edits → verify session-minder hooks still
-run → end-to-end test. As of Honcho's last write, integrations were still
-uninstalled and hook preservation unverified. **Both are now resolved** —
-this session's findings supersede that state.
+## Last session curation (honcho-memory)
+2026-08-10 prep session wrote 1 item as peer=john: #203, John's prompt-authoring rule
+— a handoff prompt pre-decides nothing the session exists to decide and inlines
+nothing that lives in source; open questions carry verbatim and the reader is told to
+ask before proposing. (#200–202 cover the 2.a process finding, the Hermes
+spawn-only constraint, and the provisional stop-gate pattern.)
 
 ## Key Decisions
-
-- Treat Phase 2.a step 1 (spike) as **done**; findings above are the record.
-- Kimi Code brought into Phase 2.a as a first-class platform (2026-08-09) after
-  its Herdr integration was installed and capture was live-verified. This
-  discharged Phase 1's one skipped step (Task 9, Step 5).
-- **Retracted** the earlier "Hermes and Kimi are not resumable, degrade by
-  design" call. All three resume commands verified against the installed
-  binaries: `claude --resume`, `hermes --resume`, `kimi --session`.
-- Build deferred to a fresh session by John's explicit request; handoff prompt
-  written at the end of this session.
-- Remaining unknown, non-blocking: no Hermes or Kimi pane observed reporting
-  `agent_session` yet (both hook scripts forward it correctly by inspection).
+- **"Resuming work, solely"** — 2.b dashboard became the `sm` resume-only terminal
+  picker; browse/curation/web UI cut, `title`/`note` columns kept (title read-only).
+- On-demand picker in a Herdr pane; noise hidden behind `sm --all`; zero new deps
+  with the pick step behind a seam (fzf deferred, reversible).
+- `/index-session` retarget (markdown indexes → DB title write) recorded as the
+  post-2.b follow-up and the trigger for retiring the three markdown index files.
+- Standing completion gate ratified into the spec: any Herdr-boundary change needs
+  one live check before "done".
+- Spec ratified & committed (a6b0352); plan written under the no-test-bodies
+  rule+mutant contract & committed (551a38f). Build deferred to its own session.
 
 ## Session Status
-
-Completed: 2026-08-09
-Servers cleaned: none — no MCP servers were enabled this session (tool count
-unchanged throughout).
-Honcho curation: 3 items written as `peer=john` in session
-`session-minder-phase2a-planning` — (1) the Herdr integration surface is closed,
-all three installed with append-not-replace verified each time; (2) John
-deliberately separates the planning session from the build session, with the
-pause-and-hand-off shape stated in his own words; (3) the "would this simplify
-things?" instinct and its generalizable lesson — verify against the running
-system rather than the docs. Deduped by live search first; no existing items
-covered these. Rejected as repo-recorded or transient: the socket-protocol
-findings, the string-`id` trap, the resume-command table, and all commit
-mechanics — those live in the spec and plan.
-
-Commits this session: `0bf0e56` (spec + spike results), `8c0cb62` (Phase 2.a
-plan), `4621a36` (Kimi as first-class platform).
+Completed: 2026-08-10
+Servers cleaned: none — no MCP servers were added this session
+Honcho curation: COMPLETE — 2 items written as peer=john (#204 resume-solely scope
+  ruling superseding the 2.b dashboard section; #205 /index-session retarget).
+  Rejected: the live-gate ratification (already in workflow-rules/CLAUDE.md/#200),
+  the fzf seam choice, #200/#201 re-applications, all repo-recorded design output.
 
 ## Notes
-
-- Service healthy: `session-minder.service` active, `healthz` → `{"ok":true}` on tailnet.
-- `raw_metadata` is `{}` on every row — capture enrichment (2.a step 2) is unstarted.
-- Uncommitted: spec (+286), `.docs/status.md`, this file.
-- Herdr 0.7.5. Workspaces: w1 `~hermes`, w2 mccoy, w3 learning, w4 meanderings,
-  w6 wayfinder, w9 session-minder.
-- Session started: 2026-08-08 13:34 EDT (Claude Code `8f7f70ae-…`).
+- Session started: 2026-08-10
+- Housekeeping still open from prior session: delete synthetic row
+  `phase2a-verify-20260809-133128`; rotate `SESSION_MINDER_TOKEN` (mbp/mini need the
+  new value); keep the 2.a SDD workspace until the 2.b brief is written; commit the
+  boundary-verification rule in idea-foundry-ops; `.docs/` is untracked — the prompt
+  file is one `git clean` away from vanishing.

@@ -1,116 +1,61 @@
 # Status
 
-_Last verified against the running system 2026-08-09._
+_Last updated 2026-08-10, end of the Phase 2.b design/planning session._
 
 ## Where are we?
 
-**Phase 2.a is built, deployed, and verified live.** Not just planned anymore —
-the "click to jump back into a session" feature exists, is running on vps8, and
-all three tools spawn successfully through it. Claude and Hermes were
-confirmed by reading the pane's own content showing a resumed conversation;
-Kimi was confirmed by Herdr reporting the resumed session id, while a separate
-Kimi spawn stalled at its own "Trust this folder?" gate.
+**Phase 2.b is fully designed and fully planned, but not built.** The design
+session ran today exactly per the two-gate shape: brainstorm, ratify section by
+section, spec, then plan — with the build deliberately left for its own session.
 
-The idea, in one line: keeping track of past Claude Code, Hermes, and Kimi Code
-sessions used to mean hand-maintaining three Markdown files in the vault,
-updated only when you remembered. session-minder replaces that with one
-automatic record in Postgres, and now a working way to jump back into any of
-them.
+The big ruling that shaped everything: **the dashboard became a picker.** You
+decided 2.b is for resuming work, solely — not browsing, not curation. What got
+designed is `sm`: a small command you run in any Herdr pane. It prints your
+~15 most recent resumable sessions (noise hidden behind `sm --all`), you type a
+number, and it jumps you to the live pane or spawns a freshly resumed one — or
+hands you the exact command to paste when that's the honest best. Web UI, card
+grid, and curation from the old spec section are out; the `title`/`note`
+columns stay in the table, with `title` shown by the picker whenever something
+sets it.
 
-What's live right now:
+Two documents carry all of it, both committed:
 
-- **50 sessions captured**, 18 of them flagged as noise. By tool: 25 Claude
-  Code, 24 Hermes, 1 Kimi Code.
-- A new "attach" feature that takes a session and does the sensible thing with
-  it: if it's still running in a Herdr pane, it switches you to that pane; if
-  it isn't, it opens a fresh pane that resumes it; and if neither is possible,
-  it hands you back the exact command to paste yourself. That last case isn't
-  a failure — it's the fallback every session gets, never a dead end.
-- Claude and Hermes were proven end to end against the real system: each
-  spawned a genuinely resumed session through the new feature, confirmed by
-  reading what actually showed up in the pane, not by trusting what the
-  server reported. Kimi's evidence is weaker and different — a spawn attempt
-  stalled at its own "Trust this folder?" gate and never reached a resumed
-  pane, so the only positive signal for Kimi is Herdr reporting the session
-  id present (`agent_session`), not confirmed pane content. Claude was
-  further proven re-findable — attaching a second time switches to the
-  existing pane instead of opening a duplicate.
-- Only 2 of the 50 stored sessions carry the Herdr pane details the feature
-  relies on. That's expected — it's only recorded for sessions started after
-  today's deploy — and the number climbs on its own as you keep working.
+- Spec: `docs/superpowers/specs/2026-08-10-session-minder-phase2b-picker-design.md`
+  (your rulings and why, the row layout, the honest outcome messages, the
+  testing contract)
+- Plan: `docs/superpowers/plans/2026-08-10-session-minder-phase2b-picker.md`
+  (8 tasks; per your post-2.a rule it contains **no test bodies** — each test
+  is a stated rule plus the specific wrong implementation that must fail, and
+  the implementer has to prove the kill)
 
-This shipped as 15 commits on top of `4b4581e`, with 79 automated tests
-passing and a clean type-check.
-
-**Three real problems were found only by testing against the live system —
-every one of them had already passed the full automated test suite.** That's
-worth pausing on, because it says something about how this got tested: unit
-tests alone would have shipped all three.
-
-1. The name given to a resumed session had a space in it, and Herdr's naming
-   rules reject that outright.
-2. That name was also the same for every session, and Herdr requires names to
-   be unique among running sessions — so only one resumed session could ever
-   exist at a time; a second one failed silently.
-3. The two-second limit on talking to Herdr was shorter than the roughly three
-   seconds Hermes actually takes to start up, so a Hermes session could never
-   successfully spawn.
-
-All three showed up to the user identically, as "Herdr unreachable" — which
-was misleading, since Herdr was running fine the whole time. All three are now
-fixed, and each has a test that pins the underlying rule so it can't quietly
-come back.
+Phase 2.a remains deployed and live on vps8; nothing running changed today.
 
 ## What's unresolved?
 
-- **Hermes sessions can only ever be spawned fresh, never re-focused.** Herdr
-  doesn't report a session id for Hermes panes — confirmed by watching a live
-  one, not assumed — so a running Hermes session can't be recognized as
-  "already open." The first attach to an ended Hermes session opens a
-  genuinely new, working pane. Attaching again while that session is still
-  live doesn't open a second working pane, though — Herdr rejects the second
-  spawn because the derived agent name is already taken by the first, and the
-  request degrades. The tab that failed attempt briefly creates is now closed
-  automatically instead of leaking (fixed alongside this ledger entry). Claude
-  and Kimi don't have this problem. This should shape what the dashboard
-  offers for Hermes.
-- **A spawned pane can land on a prompt instead of a working session.** A test
-  spawn of Kimi stopped at its own "Trust this folder?" gate and sat there
-  waiting for a keystroke. Not a bug in this code, but the dashboard shouldn't
-  promise that clicking a session always drops you into something ready to
-  use.
-- **Every kind of Herdr failure currently reports the same generic message,
-  "Herdr unreachable."** That's exactly what made today's three bugs hard to
-  track down and cost real time. Teaching the system to tell "Herdr isn't
-  running" apart from "Herdr refused this specific request" is the recommended
-  first thing to do in the next phase.
-- **Not every Hermes session we've recorded can still be resumed.** Hermes
-  quietly prunes its own session history, so some older captured sessions will
-  fail to resume even though session-minder still holds their id.
-- **Noise thresholds** (under 60 seconds, under 3 messages) are still the
-  original conservative guess. 18 of 50 sessions are now flagged — worth
-  tuning before the dashboard makes them visible.
-- **The three old Markdown index files in the vault are still sitting there**
-  untouched. Retiring them is a later decision, not urgent.
-
-## Incoming dependency (noted 2026-08-07, unchanged)
-
-The Honcho curation agent needs a reliable trigger. Hooking it to session-end
-was considered and rejected — that would re-tangle capture and curation, which
-this project deliberately keeps separate. The agreed shape instead: Honcho
-curation reads *from* session-minder's table, either as a dashboard action or a
-periodic sweep over unreviewed, non-noise sessions. Fold this into the
-dashboard conversation when it opens.
+- **The build itself** — every task in the plan, including the first work item
+  (splitting the misleading "Herdr unreachable" error into "Herdr is down" vs
+  "Herdr refused, and here's its message").
+- **Two questions only live testing can answer**, already slotted in the plan:
+  what Herdr reports when a spawned agent stalls at an interactive gate (Kimi's
+  trust prompt), and what happens when you resume a Hermes session Hermes has
+  already pruned.
+- **Housekeeping still owed (your authority):** delete the synthetic test row
+  `phase2a-verify-20260809-133128` (it will show up in `sm` otherwise), rotate
+  `SESSION_MINDER_TOKEN`, commit the boundary-verification rule sitting
+  uncommitted in idea-foundry-ops, and — once the picker exists — add the `sm`
+  alias to your `.bashrc`.
+- **Follow-ups the design created, not part of the build:** retarget your
+  existing `/index-session` skill to write session titles into the database
+  instead of the three old markdown index files (that's also the natural
+  moment to retire those files), and the Honcho-curation sweep that reads from
+  the sessions table stays parked. Noise thresholds are still the original
+  guess; `sm --all` will be your window for judging them.
 
 ## What's next?
 
-**Phase 2.b — the dashboard — is the next conversation, with no remaining gate
-before starting it.** It will be designed against the attach feature that now
-actually exists, rather than around the "copy this command" placeholder that
-used to be the plan.
-
-Worth doing early in that work: the error-reporting fix mentioned above, so the
-dashboard isn't stuck showing "Herdr unreachable" for every kind of failure the
-way today's diagnosis was.
-
-Optional and cheap whenever you feel like it: tune those noise thresholds.
+Open a fresh session in this directory and start the build: point it at
+`docs/superpowers/plans/2026-08-10-session-minder-phase2b-picker.md`. The
+plan's header already tells the worker to use subagent-driven development
+(fresh subagent per task, review between tasks — the 2.a method). Task 8 ends
+with live verification through the real Herdr on vps8 and needs your sudo for
+one service restart.
