@@ -19,8 +19,13 @@ export interface SessionRow {
   ended_at: Date | null;
 }
 
+// `herdr_rejected` is produced ONLY by the attach route's catch sites, never by
+// resolveAttach — this pure layer has no way to know a rejection happened (it
+// sees `panes: null` and nothing more). It lives in the union so the route's
+// degrade bodies stay typed against one vocabulary.
 export type DegradeReason =
   | 'herdr_unreachable'
+  | 'herdr_rejected'
   | 'foreign_host'
   | 'not_resumable_platform'
   | 'no_project_path';

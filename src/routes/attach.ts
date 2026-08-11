@@ -8,8 +8,16 @@ import {
   createHerdrClient,
   discoverHerdrSocket,
   HerdrUnreachableError,
+  HerdrRejectedError,
   type HerdrPane,
 } from '../herdr.js';
+
+// Exactly two classes may become a degrade. Anything else is a genuine bug and
+// must reach the client as a 500 — widening the guard from one class to two
+// must not widen it to "anything".
+function isHerdrError(err: unknown): boolean {
+  return err instanceof HerdrUnreachableError || err instanceof HerdrRejectedError;
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -53,12 +61,18 @@ export function registerAttachRoute(app: FastifyInstance): void {
       const client = socketPath ? createHerdrClient(socketPath) : null;
 
       let panes: HerdrPane[] | null = null;
+      // Held because `panes = null` erases WHICH class failed: resolveAttach
+      // sees only the null and always answers `herdr_unreachable`. Without this
+      // local, a refusal at pane.list would report the wrong cause at the
+      // bottom of the handler — 2.a's exact bug, one layer up.
+      let listPanesError: unknown = null;
       if (client) {
         try {
           panes = await client.listPanes();
         } catch (err) {
-          if (!(err instanceof HerdrUnreachableError)) throw err;
+          if (!isHerdrError(err)) throw err;
           request.log.warn({ err }, 'herdr listPanes failed; degrading');
+          listPanesError = err;
           panes = null;
         }
       }
@@ -78,9 +92,12 @@ export function registerAttachRoute(app: FastifyInstance): void {
           });
           return;
         } catch (err) {
-          if (!(err instanceof HerdrUnreachableError)) throw err;
+          if (!isHerdrError(err)) throw err;
           request.log.warn({ err }, 'herdr focusPane failed; degrading');
-          reply.send({ action: 'degraded', ...stripKind(degradeFallback(session)) });
+          reply.send({
+            action: 'degraded',
+            ...withHerdrCause(stripKind(degradeFallback(session)), err),
+          });
           return;
         }
       }
@@ -115,7 +132,7 @@ export function registerAttachRoute(app: FastifyInstance): void {
           });
           return;
         } catch (err) {
-          if (!(err instanceof HerdrUnreachableError)) throw err;
+          if (!isHerdrError(err)) throw err;
           request.log.warn({ err }, 'herdr spawn failed; degrading');
           // Herdr never reports agent_session for Hermes panes (see
           // src/herdr.ts), so every re-attach to a LIVE Hermes session takes
@@ -134,12 +151,15 @@ export function registerAttachRoute(app: FastifyInstance): void {
               request.log.warn({ err: cleanupErr }, 'orphaned tab cleanup failed');
             }
           }
-          reply.send({ action: 'degraded', ...stripKind(degradeFallback(session)) });
+          reply.send({
+            action: 'degraded',
+            ...withHerdrCause(stripKind(degradeFallback(session)), err),
+          });
           return;
         }
       }
 
-      reply.send({ action: 'degraded', ...stripKind(plan) });
+      reply.send({ action: 'degraded', ...withHerdrCause(stripKind(plan), listPanesError) });
     }
   );
 }
@@ -164,4 +184,28 @@ function degradeFallback(session: SessionRow) {
 function stripKind(plan: Extract<AttachPlan, { kind: 'degrade' }>) {
   const { kind: _kind, ...rest } = plan;
   return rest;
+}
+
+type DegradeBody = ReturnType<typeof stripKind> & {
+  herdr_code?: string;
+  herdr_message?: string;
+};
+
+// Replaces the generic `herdr_unreachable` with the true cause, and carries
+// Herdr's own code and message through verbatim, when the step that failed was
+// a REJECTION rather than a silence.
+//
+// Only `herdr_unreachable` is overridden. `foreign_host`, `no_project_path` and
+// `not_resumable_platform` are decided without Herdr's help and stay true no
+// matter what Herdr did — a foreign-host session is still on another machine
+// even if pane.list also happened to be refused.
+function withHerdrCause(body: DegradeBody, err: unknown): DegradeBody {
+  if (!(err instanceof HerdrRejectedError)) return body;
+  if (body.reason !== 'herdr_unreachable') return body;
+  return {
+    ...body,
+    reason: 'herdr_rejected',
+    herdr_code: err.code,
+    herdr_message: err.message,
+  };
 }

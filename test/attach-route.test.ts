@@ -265,6 +265,131 @@ describe('POST /api/sessions/:id/attach', () => {
     expect(mockClient.closeTab).toHaveBeenCalledWith('w9:t2');
   });
 
+  it('degrades with herdr_rejected carrying Herdr code and message when startAgent is refused', async () => {
+    const { HerdrRejectedError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
+    mockClient.startAgent.mockRejectedValueOnce(
+      new HerdrRejectedError(
+        'agent_name_taken',
+        'an agent named sm-abc-123 is already running',
+        'agent.start'
+      )
+    );
+
+    const res = await post();
+
+    // The whole point of Task 1's split, seen from the outside: a refusal must
+    // arrive at the client as Herdr's OWN code and message, not as the generic
+    // "can't be reached". This is the live `agent_name_taken` case — every
+    // re-attach to a running Hermes session lands here.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'herdr_rejected',
+      command: 'claude --resume abc-123',
+      herdr_code: 'agent_name_taken',
+      herdr_message: 'an agent named sm-abc-123 is already running',
+    });
+    // A rejection AFTER tab.create succeeded is precisely the orphan case, so
+    // cleanup must fire for this class exactly as it fires for unreachable.
+    expect(mockClient.closeTab).toHaveBeenCalledWith('w9:t2');
+  });
+
+  it('degrades with herdr_rejected when focusPane is refused, without any tab cleanup', async () => {
+    const { HerdrRejectedError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([
+      { pane_id: 'w9:p1', workspace_id: 'w9', tab_id: 'w9:t1', cwd: '/home/john/dev/wayfinder',
+        agent: 'claude',
+        agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'abc-123' } },
+    ]);
+    mockClient.focusPane.mockRejectedValueOnce(
+      new HerdrRejectedError('pane_not_found', 'no pane w9:p1', 'pane.focus')
+    );
+
+    const res = await post();
+
+    // Separate catch site from the spawn path — a fix to one does not protect
+    // the other. Narrowing this guard back to HerdrUnreachableError alone turns
+    // a refusal into a 500 for a session the user could still resume by hand.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'herdr_rejected',
+      command: 'claude --resume abc-123',
+      herdr_code: 'pane_not_found',
+      herdr_message: 'no pane w9:p1',
+    });
+    // Nothing was created on this path, so nothing may be closed.
+    expect(mockClient.closeTab).not.toHaveBeenCalled();
+  });
+
+  it('degrades with herdr_rejected when listPanes itself is refused', async () => {
+    const { HerdrRejectedError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockRejectedValueOnce(
+      new HerdrRejectedError('invalid_request', 'unknown variant pane.list', 'pane.list')
+    );
+
+    const res = await post();
+
+    // The step-tracking rule. listPanes failing sets panes=null, and
+    // resolveAttach(panes:null) always says `herdr_unreachable` — so unless the
+    // route REMEMBERS which class actually failed, a refusal here silently
+    // reports the wrong cause. That is the 2.a bug reproduced one layer up.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'herdr_rejected',
+      command: 'claude --resume abc-123',
+      herdr_code: 'invalid_request',
+      herdr_message: 'unknown variant pane.list',
+    });
+  });
+
+  it('keeps unreachable degrades free of herdr_code and herdr_message', async () => {
+    const { HerdrUnreachableError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
+    mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
+
+    const res = await post();
+
+    // toEqual, not toMatchObject: the absence of the rejection fields is the
+    // assertion. A helper that stamps `herdr_rejected` on every degrade would
+    // pass a shape-only check while lying about every unreachable case — and
+    // would put OUR internal error text where Herdr's words belong.
+    expect(res.json()).toEqual({
+      action: 'degraded',
+      reason: 'herdr_unreachable',
+      command: 'claude --resume abc-123',
+    });
+  });
+
+  it('does not degrade when startAgent fails with a non-Herdr error', async () => {
+    mockSql.mockResolvedValueOnce([row()]);
+    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockClient.listPanes.mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
+    mockClient.startAgent.mockRejectedValueOnce(new TypeError('bug in the client'));
+
+    const res = await post();
+
+    // Widening the guard from one Herdr class to two must not widen it to
+    // "anything". Only the two Herdr classes degrade; a genuine bug is still a
+    // 500. This is 2.a's surviving-mutant-6 pattern, re-pinned at the exact
+    // catch site the split touches.
+    expect(res.statusCode).toBe(500);
+    expect(res.json().action).toBeUndefined();
+  });
+
   it('degrades for a session captured on another host without ever focusing or spawning', async () => {
     mockSql.mockResolvedValueOnce([row({ host: 'mbp' })]);
     mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
