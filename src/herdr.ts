@@ -42,13 +42,33 @@ export interface HerdrPane {
   agent_session?: HerdrAgentSession;
 }
 
-// One error type for every "Herdr can't answer" case — socket missing, server
-// down, timeout, or a protocol-level error response. The attach route turns
-// exactly this into a degrade response; anything else is a genuine 500.
+// Herdr could not ANSWER: socket missing, server down, timeout, unparseable
+// response, or a close with no response at all. The attach route turns this
+// into a degrade response; anything outside these two classes is a genuine 500.
 export class HerdrUnreachableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'HerdrUnreachableError';
+  }
+}
+
+// Herdr DID answer — with a protocol-level error. Carries Herdr's own code and
+// message rather than discarding them (`invalid_agent_name`, `agent_name_taken`,
+// …), because those are the only diagnosis a caller ever gets.
+//
+// Deliberately a SIBLING of HerdrUnreachableError, not a subclass. Subclassing
+// would let every existing `instanceof HerdrUnreachableError` catch site keep
+// swallowing rejections unchanged — which is exactly the 2.a collapse this
+// split exists to end. Sibling classes force each catch site to decide about
+// both.
+export class HerdrRejectedError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+    public method: string
+  ) {
+    super(message);
+    this.name = 'HerdrRejectedError';
   }
 }
 
@@ -81,13 +101,17 @@ function request(
     let buf = '';
     let settled = false;
 
-    const fail = (message: string) => {
+    const settle = (err: Error) => {
       clearTimeout(timer);
       if (settled) return;
       settled = true;
       conn.destroy();
-      reject(new HerdrUnreachableError(message));
+      reject(err);
     };
+
+    // Every failure to GET a response routes through here. The one path that
+    // does not is the `parsed.error` branch below — Herdr answered there.
+    const fail = (message: string) => settle(new HerdrUnreachableError(message));
 
     const timer = setTimeout(() => fail(`${method} timed out`), timeoutMs);
 
@@ -117,7 +141,11 @@ function request(
         return fail(`${method} returned unparseable JSON`);
       }
       if (parsed.error) {
-        return fail(`${method} error: ${parsed.error.code} ${parsed.error.message}`);
+        // Verbatim passthrough. Paraphrasing here would re-create the 2.a
+        // problem one layer up: the caller can only be as honest as this line.
+        return settle(
+          new HerdrRejectedError(parsed.error.code, parsed.error.message, method)
+        );
       }
       if (settled) return;
       settled = true;

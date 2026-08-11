@@ -8,6 +8,7 @@ import {
   createHerdrClient,
   discoverHerdrSocket,
   HerdrUnreachableError,
+  HerdrRejectedError,
   AGENT_START_TIMEOUT_MS,
 } from '../src/herdr.js';
 
@@ -98,15 +99,75 @@ describe('Herdr socket client', () => {
     await expect(client.listPanes()).rejects.toBeInstanceOf(HerdrUnreachableError);
   });
 
-  it('throws HerdrUnreachableError when Herdr returns a protocol error', async () => {
+  // NOTE (2026-08-10, Phase 2.b Task 1): this test previously asserted
+  // HerdrUnreachableError, pinning the very collapse that cost 2.a a day of
+  // bisection. Task 1 reverses that behavior deliberately, so the assertion is
+  // rewritten rather than deleted — the rule it pins is strictly stronger now
+  // (the class AND Herdr's own code/message, not just "some typed error").
+  it('throws HerdrRejectedError carrying Herdr code and message when Herdr answers with a protocol error', async () => {
     const { socketPath } = fakeHerdr(() => ({
       id: '',
-      error: { code: 'invalid_request', message: 'unknown variant' },
+      error: { code: 'invalid_agent_name', message: 'name must match ^[a-z][a-z0-9_-]{0,31}$' },
     }));
 
-    await expect(createHerdrClient(socketPath).listPanes()).rejects.toBeInstanceOf(
-      HerdrUnreachableError
-    );
+    // Herdr ANSWERED. Collapsing that into "unreachable" is what made all three
+    // 2.a wire bugs report the same misleading cause. The code and message must
+    // survive verbatim — they are the only diagnosis the user ever sees.
+    const err = await createHerdrClient(socketPath)
+      .listPanes()
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(HerdrRejectedError);
+    expect(err.code).toBe('invalid_agent_name');
+    expect(err.message).toBe('name must match ^[a-z][a-z0-9_-]{0,31}$');
+    expect(err.method).toBe('pane.list');
+  });
+
+  it('keeps HerdrRejectedError and HerdrUnreachableError as siblings, not subclasses', async () => {
+    const { socketPath: rejectingSocket } = fakeHerdr(() => ({
+      id: '',
+      error: { code: 'agent_name_taken', message: 'an agent named sm-abc is already running' },
+    }));
+
+    const rejected = await createHerdrClient(rejectingSocket)
+      .listPanes()
+      .catch((e) => e);
+    const unreachable = await createHerdrClient('/nonexistent/herdr.sock')
+      .listPanes()
+      .catch((e) => e);
+
+    // Load-bearing in BOTH directions. If Rejected extended Unreachable, every
+    // existing `instanceof HerdrUnreachableError` catch site would silently
+    // swallow a rejection and keep reporting "Herdr can't be reached" — the
+    // 2.a failure mode surviving the very fix meant to end it. Each catch site
+    // must be forced to decide about both classes.
+    expect(rejected).not.toBeInstanceOf(HerdrUnreachableError);
+    expect(unreachable).not.toBeInstanceOf(HerdrRejectedError);
+  });
+
+  it('throws HerdrUnreachableError when the response is not parseable JSON', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'herdr-test-'));
+    const socketPath = join(dir, 'herdr.sock');
+    const server = net.createServer((conn) => {
+      // Bytes arrive and a line completes, but there is no JSON to read — so
+      // there is no `error` object either. This is the boundary case between
+      // the two classes: a response was RECEIVED but never OBTAINED, which
+      // stays Unreachable. The other two Unreachable cases (connect failure,
+      // close-without-response) are pinned by their own tests above.
+      conn.on('data', () => conn.write('not json at all\n'));
+    });
+    server.listen(socketPath);
+    cleanups.push(() => {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    const err = await createHerdrClient(socketPath)
+      .listPanes()
+      .catch((e) => e);
+
+    expect(err).toBeInstanceOf(HerdrUnreachableError);
+    expect(err).not.toBeInstanceOf(HerdrRejectedError);
   });
 
   it('throws HerdrUnreachableError when the connection closes without a response', async () => {
