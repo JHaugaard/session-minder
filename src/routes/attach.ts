@@ -1,7 +1,7 @@
 // src/routes/attach.ts
 import type { FastifyInstance } from 'fastify';
-import { hostname } from 'node:os';
 import { getSql } from '../db.js';
+import { localHost } from '../host.js';
 import { requireAuth } from '../auth.js';
 import { resolveAttach, herdrAgentName, type SessionRow, type AttachPlan } from '../attach.js';
 import {
@@ -20,17 +20,6 @@ function isHerdrError(err: unknown): boolean {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// The hooks record `host` as the Tailscale short name (vps8-core), not the
-// provider hostname (srv1086450), so the comparison must use the same name.
-// SESSION_MINDER_HOST_NAME is set in the systemd unit; hostname() is only a
-// last-resort fallback and will simply degrade if it disagrees.
-function localHost(): string {
-  // `||`, not `??`: .env.example sets values empty by convention, and a blank
-  // SESSION_MINDER_HOST_NAME= would make `??` return '' (an empty string is
-  // not nullish), so every attach would degrade with foreign_host.
-  return process.env.SESSION_MINDER_HOST_NAME || hostname();
-}
 
 export function registerAttachRoute(app: FastifyInstance): void {
   app.post<{ Params: { id: string } }>(
