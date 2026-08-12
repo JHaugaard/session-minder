@@ -3,6 +3,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import { registerCaptureRoute } from './routes/capture.js';
 import { registerAttachRoute } from './routes/attach.js';
 import { registerSessionsRoute } from './routes/sessions.js';
+import { registerTitleRoute } from './routes/title.js';
 
 export function buildServer(): FastifyInstance {
   const app = Fastify({ logger: process.env.NODE_ENV !== 'test' });
@@ -11,6 +12,7 @@ export function buildServer(): FastifyInstance {
   registerCaptureRoute(app);
   registerAttachRoute(app);
   registerSessionsRoute(app);
+  registerTitleRoute(app);
 
   return app;
 }
