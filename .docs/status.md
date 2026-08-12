@@ -1,88 +1,80 @@
 # Status
 
-_Last updated 2026-08-10, end of the Phase 2.b build session._
+_Last updated 2026-08-11, end of the titles + rotation session._
 
 ## Where are we?
 
-**Phase 2.b is built, deployed, and live-verified.** `sm` exists. You run it in
-any Herdr pane, it prints your 15 most recent resumable sessions with the noisy
-ones hidden, you type a number, and it either jumps you to the live pane or
-opens a freshly resumed one — or hands you the exact command to paste when
-that's the honest best answer.
+**`sm` is finished and in daily use, and it writes titles now.** You run it in any
+terminal, it prints your most recent resumable sessions with the noisy ones
+hidden, you type a number, and it jumps you to the live pane or opens a freshly
+resumed one — or hands you the exact command to paste when that's the honest
+best answer. You used it all day on 2026-08-11 and called it great.
 
-The plan's eight tasks all landed, one commit each, direct to main. The suite
-went from 79 tests to 147. Every test the plan specified was written as a rule
-plus the wrong implementation it must catch, and every one of those wrong
-implementations was actually applied and watched to fail before the test
-counted — 46 of them. No new dependencies.
+Three things happened today on top of yesterday's build.
 
-The service was restarted onto the new code at 22:55 EDT and `/api/sessions`
-flipped 404 → 200. Attaches were then run for real, one per platform, through
-the real picker: Claude focused a live pane, Claude spawned a resumed one whose
-scrollback held the actual old conversation, Hermes focused (see below), and
-Kimi spawned. Every tab created during testing was closed; the pane baseline is
-byte-identical to where it started.
+**Titles work end to end.** There's now one write surface — a title endpoint on
+the service — and `/index-session` has been rewritten to use it. Your gesture is
+unchanged: `/index-session some-label` mid-session. The label becomes the name
+the picker shows; the one-line summary goes into the `note` column, which existed
+but had never been written to. Re-running replaces the title, so a bad label is
+correctable. The three markdown session-index files in the vault are no longer
+written — they sit on disk as history, and nothing reads them.
 
-The full ledger — every number, every verbatim observation — is in
-`.superpowers/sdd/2026-08-10-session-minder-phase2b-picker/progress.md`.
+That rewrite also fixed a real bug you never saw. The old skill guessed which
+session you were in by taking the most recently modified transcript file in the
+project folder. This project has ten. It gave the right answer every time you
+used it and would have kept doing so until the day two sessions were open at
+once. It now reads the session id Claude Code actually exports.
 
-## What we learned that we didn't know this morning
+**The token is rotated.** It turned out to live in six files, not one — the
+project's `.env.local`, Claude Code's settings, and four Hermes env files. All
+six now carry a new one, and the old one is dead (the service rejects it). Stale
+copies in two old backup files were deleted. Copies that survive in a Hermes
+database and a handful of session transcripts can't be edited, but rotating is
+what made them worthless.
 
-**Hermes can be focused after all.** The spec carried this as a fixed,
-live-verified, not-revisitable constraint: Herdr never reports a session id for
-a Hermes pane, so Hermes is spawn-only forever. That is no longer true — on the
-same Herdr 0.7.5, two of four Hermes panes reported their session id, and a live
-Hermes session focused cleanly through the deployed service. The design
-predicted this exact possibility and needs no code change; the join was always
-generic. What's now wrong is the documentation: the gotchas block in CLAUDE.md
-and the constraint list in the spec both still state the dead rule.
+**The documentation now matches reality.** Yesterday's live testing killed a
+"fixed constraint" — Hermes sessions *can* be focused. CLAUDE.md is corrected,
+the ratified spec carries a dated addendum rather than a rewrite, and the one
+user-facing message that repeated the false claim has been fixed.
 
-**Both declared unknowns are answered.** Kimi's trust gate cannot be detected —
-Herdr reports `interactive_ready: true` and `agent_status: idle` for an agent
-sitting at "Trust this folder?", the same values a healthy pane reports. So the
-standing caveat on every spawn stays, exactly as the spec said it would if the
-answer came back negative. And resuming a Hermes id that Hermes has pruned
-produces no error at all: the pane opens, prints "Session not found", and drops
-you into a brand-new Hermes session. `sm` says "Opened a resumed pane", which is
-true about the pane and false about the resume.
-
-**The error split earned itself on the first live run.** A failed attach printed
-`Herdr refused: agent target pane w9:pE is not an available shell` — Herdr's own
-words. Before this phase that same failure would have read "Herdr unreachable"
-with the cause thrown away, which is the thing that cost a day in 2.a.
+Everything is committed and pushed. The test suite is at 157, up from 79 two days
+ago, and every test names the specific wrong implementation it would catch.
 
 ## What's unresolved?
 
-- **Four findings, none blocking, none acted on** (the standing gate says no code
-  change from a live finding without showing you the diagnosis first):
-  1. The `agent_name_taken` message tells you "Herdr can't jump to Hermes panes."
-     That's now wrong twice — Herdr can, and the collision was observed on Kimi.
-     Worth a one-line rewrite.
-  2. `msgs` is an em dash on every row and always will be: no hook has ever sent
-     `message_count`. Half the substance signal the design wanted is absent.
-  3. Pruned-Hermes resume reports success (above). Detecting it would mean
-     asking Hermes before attaching, which crosses the boundary the design drew.
-  4. Rapid back-to-back spawns can hit a pane before its shell is ready. One
-     attach immediately after succeeded, so it's a race under repetition, not a
-     persistent fault.
-- **Documentation owed:** correct the Hermes constraint in CLAUDE.md and the 2.b
-  spec.
+Nothing blocking. Four things are known and deliberately not fixed:
 
-## Housekeeping still owed (your authority)
+- **`msgs` will always be empty.** No capture hook has ever sent a message count.
+  The column shows an em dash on every row and will until a hook sends one.
+- **Resuming a Hermes session that Hermes has already forgotten looks like it
+  worked.** The pane opens, prints "Session not found", and drops you into a new
+  session, while `sm` says "Opened a resumed pane." Glance at the pane before you
+  start typing. Nothing in the database can predict which Hermes ids are still
+  alive.
+- **A spawned pane can be sitting at a prompt** (Kimi's "Trust this folder?").
+  This cannot be detected — Herdr reports a stalled agent as ready and idle,
+  identical to a healthy one. That's why every spawn carries the caveat line.
+- **Two rapid-fire attaches in a row** can hit a pane before its shell is up. A
+  single attach right after succeeded, so it's a race under repetition.
 
-- Delete the synthetic row `phase2a-verify-20260809-133128` — still present, and
-  it shows up in `sm --all`.
-- Add the alias:
-  `alias sm='npx tsx /home/john/dev/active/session-minder/src/cli/sm.ts'`
-- Rotate `SESSION_MINDER_TOKEN` (open since 2.a).
-- Commit the boundary-verification rule sitting uncommitted in idea-foundry-ops.
+Two follow-ups from the original design are still parked: retiring the three
+markdown index files (they're dead but hold summaries predating the database —
+your call, no rush), and the Honcho curation sweep that would read from the
+sessions table. That one reads better now that titles exist.
 
 ## What's next?
 
-Use it for a week and let the list tell you what's wrong with it. The two
-follow-ups the design already created are still parked and still make sense:
-retarget `/index-session` to write `title` onto the session's row instead of the
-three markdown index files (that's also the moment to retire those files), and
-the Honcho curation sweep that reads from the sessions table. Noise thresholds
-are still the original guess — `sm --all` is your window for judging them, and
-now you have one.
+Nothing, deliberately. Use it for a week and name the sessions worth naming.
+That's the only way to learn whether 60 characters is the right title limit,
+whether splitting a label from a paragraph holds up in practice, or whether the
+noise thresholds need moving — `sm --all` is your window on that last one.
+
+Maintenance is two habits and nothing else. Push after any session that changes
+code; today's gap had grown to eight days and two entire phases living on one
+machine. And when Herdr updates, run the tests *and* do one real `sm` attach and
+look at the pane — a green suite has now twice failed to notice that Herdr
+changed underneath it.
+
+If you find yourself doing more than that, it's the infrastructure reflex rather
+than the project asking for anything.

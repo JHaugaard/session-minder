@@ -26,6 +26,15 @@ Decisions made in the design conversation, each ratified explicitly:
 | `title` / `note` columns? | **`title` read-only in play; `note` dormant; both columns untouched** | Row identity needs a name when one exists; a paragraph has no home in a one-line row |
 | Auth beyond bearer token? | **No** | A terminal client on the tailnet uses `SESSION_MINDER_TOKEN` from the env; there is no new surface to protect |
 
+> **Correction, 2026-08-11 (added after ratification; the text below is left as
+> written).** The first bullet under "Fixed constraints" is false. On the same
+> Herdr 0.7.5, two of four Hermes panes reported `agent_session`
+> (`source: "herdr:hermes"`), and a live Hermes session was **focused** through
+> the deployed service. The design anticipated this and needed no change — the
+> join is generic, exactly as the parenthetical predicted. Treat every observed
+> Herdr behavior as true-on-the-day-observed, not as a constant; this is the
+> second such fact to expire with no version bump. See CLAUDE.md `<gotchas>`.
+
 ## Fixed constraints (inherited from 2.a, live-verified, not revisitable here)
 
 - The attach contract returns `focused` / `spawned` / `degraded`; degraded is a
