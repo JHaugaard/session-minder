@@ -47,9 +47,18 @@ function render(r: AttachResponse, session: SessionSummary): string[] {
       // match would silently degrade this honest answer into the generic one
       // the first time Herdr rewrites a sentence.
       if (r.herdr_code === 'agent_name_taken') {
+        // The name collision is the honest signal that this session is already
+        // running somewhere Herdr could not recognise from its pane list.
+        //
+        // This sentence used to add "Herdr can't jump to Hermes panes". Removed
+        // 2026-08-11: that was wrong twice over. Herdr 0.7.5 does report
+        // agent_session for some Hermes panes (a live Hermes session focused
+        // cleanly through this service), and the collision was observed on a
+        // KIMI session. Naming a platform here was always a guess about the
+        // cause; the collision itself is the only thing we actually know.
         return withCommand(
-          'This session appears to be running in another pane already. ' +
-            "Herdr can't jump to Hermes panes — switch to it by hand, or paste:",
+          'This session appears to be running in another pane already — ' +
+            'switch to it by hand, or paste:',
           r.command
         );
       }
