@@ -70,6 +70,7 @@ work. Verified 2026-08-11.
 | `~/.claude/settings.json` | Claude Code start/end hooks **and** an inline `SESSION_MINDER_TOKEN` | re-add hook entries pointing at `hooks/claude-code/` |
 | `~/.hermes/shell-hooks-allowlist.json` + `~/.hermes/.env` + `~/.hermes/profiles/*/.env` | Hermes hook permission and the token, per profile | allowlist the two scripts in `hooks/hermes/`; set the token in each profile that captures |
 | `~/.kimi-code/config.toml` | Kimi hooks | point at `hooks/kimi-code/` (reads the token from `.env.local` directly — no copy of its own) |
+| `~/.claude/skills/index-session/SKILL.md` | the `/index-session` gesture — `PUT /api/sessions/title` with `$CLAUDE_CODE_SESSION_ID` | reads the token from `.env.local`; no copy of its own |
 
 Plus the convenience alias in `~/.bashrc`:
 ```
