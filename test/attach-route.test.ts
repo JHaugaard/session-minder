@@ -2,25 +2,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { herdrAgentName } from '../src/attach.js';
 
-const { mockSql, mockClient, mockDiscover } = vi.hoisted(() => ({
-  mockSql: vi.fn(),
-  mockClient: {
+const { mockSql, mockClient, mockDiscover, mockCreateClient } = vi.hoisted(() => {
+  const mockClient = {
     listPanes: vi.fn(),
     focusPane: vi.fn(),
     createTab: vi.fn(),
     startAgent: vi.fn(),
     closeTab: vi.fn(),
-  },
-  mockDiscover: vi.fn(),
-}));
+  };
+  return {
+    mockSql: vi.fn(),
+    mockClient,
+    mockDiscover: vi.fn(),
+    // A vi.fn, not a bare arrow: which socket the route opened is now a
+    // behavioural fact worth asserting, and the client itself cannot reveal it.
+    mockCreateClient: vi.fn(() => mockClient),
+  };
+});
 
 vi.mock('../src/db.js', () => ({ getSql: () => mockSql }));
 vi.mock('../src/herdr.js', async () => {
   const actual = await vi.importActual<typeof import('../src/herdr.js')>('../src/herdr.js');
   return {
     ...actual,
-    createHerdrClient: () => mockClient,
-    discoverHerdrSocket: mockDiscover,
+    createHerdrClient: mockCreateClient,
+    discoverHerdrSockets: mockDiscover,
   };
 });
 
@@ -50,6 +56,7 @@ describe('POST /api/sessions/:id/attach', () => {
     mockSql.mockReset();
     Object.values(mockClient).forEach((fn) => fn.mockReset());
     mockDiscover.mockReset();
+    mockCreateClient.mockClear();
     process.env.SESSION_MINDER_TOKEN = 'test-token-123';
     process.env.SESSION_MINDER_HOST_NAME = 'vps8-core';
   });
@@ -72,7 +79,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('focuses the pane and reports action=focused', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([
       {
         pane_id: 'w9:p1',
@@ -104,9 +111,119 @@ describe('POST /api/sessions/:id/attach', () => {
     expect(queryText).toMatch(/project_path/);
   });
 
+  // Multi-server routing. There can be several Herdr servers live at once, and
+  // until 2026-08-18 the route always used whichever answered first.
+  it('focuses on the server that actually hosts the session, not the first one', async () => {
+    mockSql.mockResolvedValueOnce([row({ herdr_socket_path: null })]);
+    mockDiscover.mockResolvedValueOnce(['/default/herdr.sock', '/named/herdr.sock']);
+    mockClient.listPanes
+      // The first server answers, and hosts an unrelated pane that happens to
+      // carry the SAME pane id — verified live: ids are not unique across
+      // servers, so a merged pane list would focus the wrong terminal.
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'w9:p1',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          cwd: '/somewhere/else',
+          agent: 'claude',
+          agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'someone-else' },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'wP:p1',
+          workspace_id: 'wP',
+          tab_id: 'wP:t1',
+          cwd: '/home/john/dev/wayfinder',
+          agent: 'claude',
+          agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'abc-123' },
+        },
+      ]);
+
+    const res = await post();
+
+    // Stopping at the first server misses the live pane entirely and takes the
+    // spawn branch — opening a duplicate agent beside the session John is
+    // already sitting in. That is the damage this pins.
+    expect(res.json()).toEqual({ action: 'focused', pane_id: 'wP:p1', workspace_id: 'wP' });
+    expect(mockClient.focusPane).toHaveBeenCalledWith('wP:p1');
+    expect(mockClient.createTab).not.toHaveBeenCalled();
+    // And it focused through the RIGHT server.
+    expect(mockCreateClient).toHaveBeenLastCalledWith('/named/herdr.sock');
+  });
+
+  it('tries the server the session was captured in first', async () => {
+    mockSql.mockResolvedValueOnce([row({ herdr_socket_path: '/named/herdr.sock' })]);
+    mockDiscover.mockResolvedValueOnce(['/default/herdr.sock', '/named/herdr.sock']);
+    mockClient.listPanes.mockResolvedValueOnce([
+      {
+        pane_id: 'wP:p1',
+        workspace_id: 'wP',
+        tab_id: 'wP:t1',
+        cwd: '/home/john/dev/wayfinder',
+        agent: 'claude',
+        agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'abc-123' },
+      },
+    ]);
+
+    const res = await post();
+
+    // Catches ignoring the recorded socket. The hooks already write it from
+    // HERDR_SOCKET_PATH, so honouring it means one pane.list call instead of
+    // walking every server — and it is the only signal that survives when a
+    // session is NOT currently live anywhere.
+    expect(res.json()).toEqual({ action: 'focused', pane_id: 'wP:p1', workspace_id: 'wP' });
+    expect(mockClient.listPanes).toHaveBeenCalledTimes(1);
+    expect(mockCreateClient).toHaveBeenCalledWith('/named/herdr.sock');
+    expect(mockCreateClient).not.toHaveBeenCalledWith('/default/herdr.sock');
+  });
+
+  it('spawns into the first responsive server when no server hosts the session', async () => {
+    mockSql.mockResolvedValueOnce([row({ herdr_socket_path: null })]);
+    mockDiscover.mockResolvedValueOnce(['/default/herdr.sock', '/named/herdr.sock']);
+    mockClient.listPanes.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    mockClient.createTab.mockResolvedValueOnce({ paneId: 'wN:p2', tabId: 'wN:t2' });
+    mockClient.startAgent.mockResolvedValueOnce({ argv: ['claude', '--resume', 'abc-123'] });
+
+    const res = await post();
+
+    // Catches leaving socketPath null when every server answered but none had
+    // the pane — the spawn branch would then degrade as herdr_unreachable
+    // even though Herdr is plainly up and reachable.
+    expect(res.json().action).toBe('spawned');
+    expect(mockClient.createTab).toHaveBeenCalled();
+  });
+
+  it('falls through to a live server when an earlier one refuses', async () => {
+    const { HerdrRejectedError } = await import('../src/herdr.js');
+    mockSql.mockResolvedValueOnce([row({ herdr_socket_path: null })]);
+    mockDiscover.mockResolvedValueOnce(['/broken/herdr.sock', '/named/herdr.sock']);
+    mockClient.listPanes
+      .mockRejectedValueOnce(
+        new HerdrRejectedError('invalid_request', 'unknown variant', 'pane.list')
+      )
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'wP:p1',
+          workspace_id: 'wP',
+          tab_id: 'wP:t1',
+          cwd: '/home/john/dev/wayfinder',
+          agent: 'claude',
+          agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'abc-123' },
+        },
+      ]);
+
+    const res = await post();
+
+    // Catches aborting the walk on the first failure. One dead or refusing
+    // server among several is the normal state on this machine.
+    expect(res.json()).toEqual({ action: 'focused', pane_id: 'wP:p1', workspace_id: 'wP' });
+  });
+
   it('spawns a tab and starts the agent for an ended session', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockResolvedValueOnce({ argv: ['claude', '--resume', 'abc-123'] });
@@ -143,7 +260,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('degrades with 200 and a copyable command when Herdr is not running', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce(null);
+    mockDiscover.mockResolvedValueOnce([]);
 
     const res = await post();
 
@@ -160,7 +277,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades when a Herdr call throws mid-flight', async () => {
     const { HerdrUnreachableError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
 
     const res = await post();
@@ -180,7 +297,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('does not degrade when listPanes fails with a non-Herdr error', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockRejectedValueOnce(new TypeError('bug in the client'));
 
     const res = await post();
@@ -195,7 +312,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('does not degrade when a spawn call fails with a non-Herdr error', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockRejectedValueOnce(new TypeError('bug in the client'));
 
@@ -210,7 +327,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades with a command when focusPane fails mid-flight', async () => {
     const { HerdrUnreachableError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([
       { pane_id: 'w9:p1', workspace_id: 'w9', tab_id: 'w9:t1', cwd: '/home/john/dev/wayfinder',
         agent: 'claude',
@@ -234,7 +351,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades with a command when startAgent fails mid-flight', async () => {
     const { HerdrUnreachableError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
@@ -249,7 +366,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('closes the orphaned tab when startAgent fails after createTab succeeded', async () => {
     const { HerdrUnreachableError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('agent_name_taken'));
@@ -268,7 +385,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades with herdr_rejected carrying Herdr code and message when startAgent is refused', async () => {
     const { HerdrRejectedError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockRejectedValueOnce(
@@ -301,7 +418,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades with herdr_rejected when focusPane is refused, without any tab cleanup', async () => {
     const { HerdrRejectedError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([
       { pane_id: 'w9:p1', workspace_id: 'w9', tab_id: 'w9:t1', cwd: '/home/john/dev/wayfinder',
         agent: 'claude',
@@ -331,7 +448,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('degrades with herdr_rejected when listPanes itself is refused', async () => {
     const { HerdrRejectedError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockRejectedValueOnce(
       new HerdrRejectedError('invalid_request', 'unknown variant pane.list', 'pane.list')
     );
@@ -355,7 +472,7 @@ describe('POST /api/sessions/:id/attach', () => {
   it('keeps unreachable degrades free of herdr_code and herdr_message', async () => {
     const { HerdrUnreachableError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockRejectedValueOnce(new HerdrUnreachableError('socket died'));
@@ -375,7 +492,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('does not degrade when startAgent fails with a non-Herdr error', async () => {
     mockSql.mockResolvedValueOnce([row()]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
     mockClient.createTab.mockResolvedValueOnce({ paneId: 'w9:p3', tabId: 'w9:t2' });
     mockClient.startAgent.mockRejectedValueOnce(new TypeError('bug in the client'));
@@ -392,7 +509,7 @@ describe('POST /api/sessions/:id/attach', () => {
 
   it('degrades for a session captured on another host without ever focusing or spawning', async () => {
     mockSql.mockResolvedValueOnce([row({ host: 'mbp' })]);
-    mockDiscover.mockResolvedValueOnce('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValueOnce(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([]);
 
     const res = await post();

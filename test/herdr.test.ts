@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
   createHerdrClient,
   discoverHerdrSocket,
+  discoverHerdrSockets,
   HerdrUnreachableError,
   HerdrRejectedError,
   AGENT_START_TIMEOUT_MS,
@@ -507,5 +508,108 @@ describe('discoverHerdrSocket', () => {
     const found = await discoverHerdrSocket();
 
     expect(found).toBeNull();
+  });
+});
+
+describe('discoverHerdrSockets', () => {
+  const savedEnv: { home?: string; override?: string } = {};
+
+  beforeEach(() => {
+    savedEnv.home = process.env.HOME;
+    savedEnv.override = process.env.SESSION_MINDER_HERDR_SOCKET;
+    delete process.env.SESSION_MINDER_HERDR_SOCKET;
+  });
+
+  afterEach(() => {
+    if (savedEnv.home === undefined) delete process.env.HOME;
+    else process.env.HOME = savedEnv.home;
+    if (savedEnv.override === undefined) delete process.env.SESSION_MINDER_HERDR_SOCKET;
+    else process.env.SESSION_MINDER_HERDR_SOCKET = savedEnv.override;
+  });
+
+  function liveResponderAt(socketPath: string) {
+    const server = net.createServer((conn) => {
+      conn.on('data', () => {
+        conn.write(JSON.stringify({ id: '1', result: { type: 'ok' } }) + '\n');
+      });
+    });
+    server.listen(socketPath);
+    cleanups.push(() => server.close());
+  }
+
+  function homeWithHerdr(): string {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'));
+    cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+    mkdirSync(join(home, '.config', 'herdr'), { recursive: true });
+    return home;
+  }
+
+  it('returns EVERY live socket, not just the first that answers', async () => {
+    const home = homeWithHerdr();
+    const defaultSock = join(home, '.config', 'herdr', 'herdr.sock');
+    liveResponderAt(defaultSock);
+    const namedDir = join(home, '.config', 'herdr', 'sessions', 'herdr-4up');
+    mkdirSync(namedDir, { recursive: true });
+    const namedSock = join(namedDir, 'herdr.sock');
+    liveResponderAt(namedSock);
+    process.env.HOME = home;
+
+    const found = await discoverHerdrSockets();
+
+    // THE defect this exists for. Returning at the first live candidate binds
+    // the service to the default server, which always answers and — measured
+    // live 2026-08-18 — held one pane and none of John's sessions, while the
+    // named server held all six. The API still reported `herdr: ok`, so the
+    // failure was invisible: every `live` marker false with four sessions
+    // demonstrably running.
+    expect(found).toEqual([defaultSock, namedSock]);
+  });
+
+  it('skips dead candidates while keeping the live ones', async () => {
+    const home = homeWithHerdr();
+    // Stale file at the always-first default slot, no listener behind it.
+    writeFileSync(join(home, '.config', 'herdr', 'herdr.sock'), '');
+    const liveDir = join(home, '.config', 'herdr', 'sessions', 'alive');
+    mkdirSync(liveDir, { recursive: true });
+    const liveSock = join(liveDir, 'herdr.sock');
+    liveResponderAt(liveSock);
+    process.env.HOME = home;
+
+    // Catches existence-only checking, which would report the stale default
+    // as usable and put it FIRST — the position callers prefer.
+    expect(await discoverHerdrSockets()).toEqual([liveSock]);
+  });
+
+  it('orders named sessions deterministically', async () => {
+    const home = homeWithHerdr();
+    for (const name of ['zeta', 'alpha', 'mid']) {
+      const dir = join(home, '.config', 'herdr', 'sessions', name);
+      mkdirSync(dir, { recursive: true });
+      liveResponderAt(join(dir, 'herdr.sock'));
+    }
+    process.env.HOME = home;
+
+    const found = await discoverHerdrSockets();
+
+    // Catches relying on raw readdir order. Attach breaks ties on this order,
+    // so an unstable list means the same request can land on a different
+    // Herdr server run to run.
+    expect(found.map((p) => p.split('/').at(-2))).toEqual(['alpha', 'mid', 'zeta']);
+  });
+
+  it('returns the override alone, unprobed', async () => {
+    process.env.SESSION_MINDER_HERDR_SOCKET = '/pinned/herdr.sock';
+
+    // Catches probing the override: it is the escape hatch for exactly the
+    // case where discovery is wrong, so it must not depend on discovery.
+    expect(await discoverHerdrSockets()).toEqual(['/pinned/herdr.sock']);
+  });
+
+  it('returns an empty array when nothing is live', async () => {
+    const home = homeWithHerdr();
+    process.env.HOME = home;
+
+    // Catches returning [null] or similar — callers loop over this.
+    expect(await discoverHerdrSockets()).toEqual([]);
   });
 });

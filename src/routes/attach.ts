@@ -6,7 +6,7 @@ import { requireAuth } from '../auth.js';
 import { resolveAttach, herdrAgentName, type SessionRow, type AttachPlan } from '../attach.js';
 import {
   createHerdrClient,
-  discoverHerdrSocket,
+  discoverHerdrSockets,
   HerdrUnreachableError,
   HerdrRejectedError,
   type HerdrPane,
@@ -18,6 +18,17 @@ import {
 function isHerdrError(err: unknown): boolean {
   return err instanceof HerdrUnreachableError || err instanceof HerdrRejectedError;
 }
+
+// Does this server host the session we were asked to attach to? The join key
+// is agent_session.value — the same key the list route badges `live` with.
+function hostsSession(panes: HerdrPane[], externalSessionId: string): boolean {
+  return panes.some((pane) => pane.agent_session?.value === externalSessionId);
+}
+
+// SessionRow plus the Herdr server the capture hooks saw this session running
+// in. Not on SessionRow itself: the pure decision layer must not start
+// branching on which socket a session came from.
+type AttachSessionRow = SessionRow & { herdr_socket_path: string | null };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,8 +44,9 @@ export function registerAttachRoute(app: FastifyInstance): void {
       }
 
       const sql = getSql();
-      const [session] = await sql<SessionRow[]>`
-        SELECT id, platform, external_session_id, host, project_path, ended_at
+      const [session] = await sql<AttachSessionRow[]>`
+        SELECT id, platform, external_session_id, host, project_path, ended_at,
+               raw_metadata -> 'herdr' ->> 'socket_path' AS herdr_socket_path
         FROM _sessionminder.sessions
         WHERE id = ${id}
       `;
@@ -43,28 +55,61 @@ export function registerAttachRoute(app: FastifyInstance): void {
         return;
       }
 
-      const socketPath = await discoverHerdrSocket();
-      if (!socketPath) {
+      // WHICH Herdr server? There can be several running at once, and
+      // picking the wrong one is not a cosmetic mistake: the live pane is
+      // invisible from the wrong server, so attach takes the spawn branch and
+      // opens a duplicate agent beside the session John is already sitting in.
+      //
+      // Preference order:
+      //   1. the server this session was CAPTURED in — the hooks record it
+      //      from HERDR_SOCKET_PATH (present on 80 of 151 rows, 2026-08-18)
+      //   2. any other live server that can actually see the session
+      //   3. the first server that answered, for the spawn and degrade
+      //      branches, which do not depend on panes at all
+      const socketPaths = await discoverHerdrSockets();
+      if (socketPaths.length === 0) {
         request.log.warn('herdr socket discovery found no live candidate; degrading');
       }
-      const client = socketPath ? createHerdrClient(socketPath) : null;
+      const captured = session.herdr_socket_path;
+      const ordered =
+        captured && socketPaths.includes(captured)
+          ? [captured, ...socketPaths.filter((path) => path !== captured)]
+          : socketPaths;
 
+      let socketPath: string | null = null;
       let panes: HerdrPane[] | null = null;
       // Held because `panes = null` erases WHICH class failed: resolveAttach
       // sees only the null and always answers `herdr_unreachable`. Without this
       // local, a refusal at pane.list would report the wrong cause at the
       // bottom of the handler — 2.a's exact bug, one layer up.
       let listPanesError: unknown = null;
-      if (client) {
+
+      for (const candidate of ordered) {
+        let candidatePanes: HerdrPane[];
         try {
-          panes = await client.listPanes();
+          candidatePanes = await createHerdrClient(candidate).listPanes();
         } catch (err) {
           if (!isHerdrError(err)) throw err;
-          request.log.warn({ err }, 'herdr listPanes failed; degrading');
+          request.log.warn({ err, socketPath: candidate }, 'herdr listPanes failed');
           listPanesError = err;
-          panes = null;
+          continue;
+        }
+        // Pane ids are NOT unique across servers, so the panes handed to
+        // resolveAttach have to come from exactly one of them — never merged.
+        if (panes === null) {
+          socketPath = candidate;
+          panes = candidatePanes;
+          listPanesError = null;
+        }
+        if (hostsSession(candidatePanes, session.external_session_id)) {
+          socketPath = candidate;
+          panes = candidatePanes;
+          listPanesError = null;
+          break;
         }
       }
+
+      const client = socketPath ? createHerdrClient(socketPath) : null;
 
       const plan = resolveAttach({ session, panes, localHost: localHost() });
 

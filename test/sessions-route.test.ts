@@ -19,7 +19,7 @@ vi.mock('../src/herdr.js', async () => {
   return {
     ...actual,
     createHerdrClient: () => mockClient,
-    discoverHerdrSocket: mockDiscover,
+    discoverHerdrSockets: mockDiscover,
   };
 });
 
@@ -63,7 +63,7 @@ describe('GET /api/sessions', () => {
     process.env.SESSION_MINDER_HOST_NAME = 'vps8-core';
     // Default happy path: no Herdr, one row, nothing hidden. Individual tests
     // override with their own mockResolvedValueOnce before the request.
-    mockDiscover.mockResolvedValue(null);
+    mockDiscover.mockResolvedValue([]);
   });
 
   it('rejects requests without a valid bearer token', async () => {
@@ -159,7 +159,7 @@ describe('GET /api/sessions', () => {
         }),
       ])
       .mockResolvedValueOnce([{ count: 0 }]);
-    mockDiscover.mockResolvedValue('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValue(['/tmp/herdr.sock']);
     mockClient.listPanes.mockResolvedValueOnce([
       {
         pane_id: 'w9:p1',
@@ -184,9 +184,86 @@ describe('GET /api/sessions', () => {
     expect(first.external_session_id).toBeUndefined();
   });
 
+  it('unions live panes across EVERY running Herdr server', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        dbRow({ external_session_id: 'in-default-server' }),
+        dbRow({ id: '22222222-2222-3333-4444-555555555555', external_session_id: 'in-named-server' }),
+        dbRow({ id: '33333333-2222-3333-4444-555555555555', external_session_id: 'in-no-server' }),
+      ])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    mockDiscover.mockResolvedValue(['/default/herdr.sock', '/named/herdr.sock']);
+    // Note both servers host a pane called `w9:p1`. Pane ids are NOT unique
+    // across servers — verified live 2026-08-18 — which is why the union is
+    // built from agent_session values rather than from flattened panes.
+    mockClient.listPanes
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'w9:p1',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          agent: 'claude',
+          agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'in-default-server' },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'w9:p1',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          agent: 'hermes',
+          agent_session: { source: 'herdr:hermes', agent: 'hermes', kind: 'id', value: 'in-named-server' },
+        },
+      ]);
+
+    const res = await get();
+    const [a, b, c] = res.json().sessions;
+
+    // Stopping at the first server is the defect. Live on 2026-08-18 the first
+    // responsive socket was the default server, holding one pane and none of
+    // John's work; the server he actually used was second. Every marker came
+    // back false while four sessions were running, and `herdr` still said ok —
+    // so nothing about the response looked wrong.
+    expect(mockClient.listPanes).toHaveBeenCalledTimes(2);
+    expect(a.live).toBe(true);
+    expect(b.live).toBe(true);
+    expect(c.live).toBe(false);
+    expect(res.json().herdr).toBe('ok');
+  });
+
+  it('keeps herdr:ok when one server answers and another refuses', async () => {
+    const { HerdrRejectedError } = await import('../src/herdr.js');
+    mockSql
+      .mockResolvedValueOnce([dbRow({ external_session_id: 'live-one' })])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    mockDiscover.mockResolvedValue(['/good/herdr.sock', '/bad/herdr.sock']);
+    mockClient.listPanes
+      .mockResolvedValueOnce([
+        {
+          pane_id: 'w9:p1',
+          workspace_id: 'w9',
+          tab_id: 'w9:t1',
+          agent: 'claude',
+          agent_session: { source: 'herdr:claude', agent: 'claude', kind: 'id', value: 'live-one' },
+        },
+      ])
+      .mockRejectedValueOnce(
+        new HerdrRejectedError('invalid_request', 'unknown variant', 'pane.list')
+      );
+
+    const res = await get();
+
+    // Catches letting a later failure overwrite an answer already obtained.
+    // One dead or refusing server among several is the normal state on this
+    // machine; downgrading to 'rejected' would put a warning on a list whose
+    // markers are correct.
+    expect(res.json().sessions[0].live).toBe(true);
+    expect(res.json().herdr).toBe('ok');
+  });
+
   it('still returns sessions with live:null when Herdr cannot answer', async () => {
     mockSql.mockResolvedValueOnce([dbRow()]).mockResolvedValueOnce([{ count: 0 }]);
-    mockDiscover.mockResolvedValue(null);
+    mockDiscover.mockResolvedValue([]);
 
     const res = await get();
 
@@ -202,7 +279,7 @@ describe('GET /api/sessions', () => {
   it('reports herdr:rejected distinctly when listPanes is refused', async () => {
     const { HerdrRejectedError } = await import('../src/herdr.js');
     mockSql.mockResolvedValueOnce([dbRow()]).mockResolvedValueOnce([{ count: 0 }]);
-    mockDiscover.mockResolvedValue('/tmp/herdr.sock');
+    mockDiscover.mockResolvedValue(['/tmp/herdr.sock']);
     mockClient.listPanes.mockRejectedValueOnce(
       new HerdrRejectedError('invalid_request', 'unknown variant', 'pane.list')
     );

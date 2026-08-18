@@ -9,7 +9,7 @@ import { requireAuth } from '../auth.js';
 import { localHost } from '../host.js';
 import {
   createHerdrClient,
-  discoverHerdrSocket,
+  discoverHerdrSockets,
   HerdrUnreachableError,
   HerdrRejectedError,
 } from '../herdr.js';
@@ -100,31 +100,36 @@ export function registerSessionsRoute(app: FastifyInstance): void {
       }
 
       // Liveness is never stored. It is a join against Herdr's live panes,
-      // computed at request time on the same key the attach route focuses on.
+      // computed at request time on the same key the attach route focuses on
+      // — and unioned across EVERY running Herdr server, because a session is
+      // live if any of them hosts it. Asking only the first responsive socket
+      // is what made all 100 markers false on 2026-08-18 while four sessions
+      // were demonstrably running (see discoverHerdrSockets).
       let liveIds: Set<string> | null = null;
       let herdr: 'ok' | 'unreachable' | 'rejected' = 'unreachable';
-      const socketPath = await discoverHerdrSocket();
-      if (socketPath) {
+      for (const socketPath of await discoverHerdrSockets()) {
         try {
           const panes = await createHerdrClient(socketPath).listPanes();
-          liveIds = new Set(
-            panes
-              .map((p) => p.agent_session?.value)
-              .filter((v): v is string => typeof v === 'string')
-          );
+          liveIds ??= new Set();
+          for (const pane of panes) {
+            const value = pane.agent_session?.value;
+            if (typeof value === 'string') liveIds.add(value);
+          }
           herdr = 'ok';
         } catch (err) {
           // The list must never fail for want of Herdr — sessions live in
           // Postgres. Both Herdr classes are tolerated here and reported
-          // distinctly; anything else is a real bug and still throws.
+          // distinctly; anything else is a real bug and still throws. One
+          // server refusing does not downgrade an answer another server
+          // already gave, so 'ok' is sticky.
           if (err instanceof HerdrRejectedError) {
-            herdr = 'rejected';
+            if (herdr !== 'ok') herdr = 'rejected';
           } else if (err instanceof HerdrUnreachableError) {
-            herdr = 'unreachable';
+            // Leave the status as-is; a dead socket among live ones is normal.
           } else {
             throw err;
           }
-          request.log.warn({ err }, 'herdr listPanes failed; live markers unavailable');
+          request.log.warn({ err, socketPath }, 'herdr listPanes failed; live markers may be partial');
         }
       }
 

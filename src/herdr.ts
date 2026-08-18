@@ -214,30 +214,53 @@ export function createHerdrClient(socketPath: string): HerdrClient {
 // no HERDR_SOCKET_PATH of its own. Discovery beats configuration here: John
 // renames his Herdr session as his layout evolves (herdr-lab -> herdr-4up), and
 // a pinned path in the unit file would rot silently on the next rename.
-export async function discoverHerdrSocket(): Promise<string | null> {
+// Every responsive Herdr server, not just the first one that answers.
+//
+// John runs more than one at a time. Observed 2026-08-18: three live sockets —
+// the default server, a stale named session, and `herdr-4up` with six panes,
+// which is the one he actually works in and is NOT first in candidate order.
+// The default socket is probed first and always answers, so a
+// first-responder-wins discovery bound the service to a server holding one
+// pane and none of his sessions. The symptom was silent: the API reported
+// `herdr: ok` while every `live` marker came back false.
+//
+// Pane ids are NOT unique across servers — both servers above host a `w1:p1`
+// — so callers must keep panes grouped by the socket they came from instead
+// of flattening them into one list.
+export async function discoverHerdrSockets(): Promise<string[]> {
   const override = process.env.SESSION_MINDER_HERDR_SOCKET;
-  if (override) return override;
+  if (override) return [override];
 
   const base = join(homedir(), '.config', 'herdr');
   const candidates = [join(base, 'herdr.sock')];
 
   try {
+    // Sorted so the candidate order is stable across runs. readdir order
+    // happens to be alphabetical here, but callers now break ties on it.
     const names = await readdir(join(base, 'sessions'));
-    for (const name of names) {
+    for (const name of names.sort()) {
       candidates.push(join(base, 'sessions', name, 'herdr.sock'));
     }
   } catch {
     // No named sessions directory — the default socket is the only candidate.
   }
 
+  const live: string[] = [];
   for (const candidate of candidates) {
     try {
       await access(candidate);
       await request(candidate, 'ping', {});
-      return candidate;
+      live.push(candidate);
     } catch {
       // Stale socket file or a stopped server; try the next candidate.
     }
   }
-  return null;
+  return live;
+}
+
+// Kept for callers that genuinely want a single socket. Prefer the plural
+// form — on this machine "the" Herdr socket is not a well-defined thing.
+export async function discoverHerdrSocket(): Promise<string | null> {
+  const [first] = await discoverHerdrSockets();
+  return first ?? null;
 }
