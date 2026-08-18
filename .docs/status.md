@@ -1,80 +1,106 @@
 # Status
 
-_Last updated 2026-08-11, end of the titles + rotation session._
+_Last updated 2026-08-18, at the end of the harvest + Herdr session._
 
 ## Where are we?
 
-**`sm` is finished and in daily use, and it writes titles now.** You run it in any
-terminal, it prints your most recent resumable sessions with the noisy ones
-hidden, you type a number, and it jumps you to the live pane or opens a freshly
-resumed one — or hands you the exact command to paste when that's the honest
-best answer. You used it all day on 2026-08-11 and called it great.
+**`sm` works, and it finally has names in it.** Run it in any terminal, see
+your recent resumable sessions with the noisy ones hidden, type a number, and
+it jumps you to the live pane or opens a freshly resumed one. That much has
+been true since 2026-08-11.
 
-Three things happened today on top of yesterday's build.
+What changed this week is that the list is now worth searching. A week after
+titles shipped, only 5 of 112 captured sessions had names — all Claude Code,
+none Hermes. The manual-naming experiment had answered its own question.
 
-**Titles work end to end.** There's now one write surface — a title endpoint on
-the service — and `/index-session` has been rewritten to use it. Your gesture is
-unchanged: `/index-session some-label` mid-session. The label becomes the name
-the picker shows; the one-line summary goes into the `note` column, which existed
-but had never been written to. Re-running replaces the title, so a bad label is
-correctable. The three markdown session-index files in the vault are no longer
-written — they sit on disk as history, and nothing reads them.
+But Hermes titles its own sessions, so rather than build a summarizer, the
+cheap move was to go take what already existed. There's now a harvester that
+reads Hermes' own stores and fills in the blanks. It runs as a dry run by
+default and prints every title it would write; `--apply` is the only thing that
+writes anything. It set 37 titles, failed on nothing, and a second run wrote
+nothing at all — it fills blanks, it never overwrites a name you typed.
 
-That rewrite also fixed a real bug you never saw. The old skill guessed which
-session you were in by taking the most recently modified transcript file in the
-project folder. This project has ten. It gave the right answer every time you
-used it and would have kept doing so until the day two sessions were open at
-once. It now reads the session id Claude Code actually exports.
+`sm miles` now returns five Miles Davis sessions. `sm syncthing` returns two.
+Neither worked before this week.
 
-**The token is rotated.** It turned out to live in six files, not one — the
-project's `.env.local`, Claude Code's settings, and four Hermes env files. All
-six now carry a new one, and the old one is dead (the service rejects it). Stale
-copies in two old backup files were deleted. Copies that survive in a Hermes
-database and a handful of session transcripts can't be edited, but rotating is
-what made them worthless.
+**A bug was also found and fixed that had been quietly breaking the picker.**
+Every "live" dot was missing — the tool couldn't tell you which sessions were
+already open in front of you. The cause was that you have three Herdr servers
+running at once, and session-minder was talking to whichever answered first,
+which happened to be one holding a single pane and none of your actual work.
+It reported itself as perfectly healthy while doing this.
 
-**The documentation now matches reality.** Yesterday's live testing killed a
-"fixed constraint" — Hermes sessions *can* be focused. CLAUDE.md is corrected,
-the ratified spec carries a dated addendum rather than a rewrite, and the one
-user-facing message that repeated the false claim has been fixed.
+That was not just cosmetic. Because the live pane was invisible, picking a
+session that was *already open* would have opened a **second** copy beside it.
+The service now checks every Herdr server, and prefers the one a session was
+originally captured in. Verified after restarting: zero live markers before,
+six after, including the session this was written from.
 
-Everything is committed and pushed. The test suite is at 157, up from 79 two days
-ago, and every test names the specific wrong implementation it would catch.
+**The Herdr agent skill is installed.** It teaches an agent already running in
+a Herdr pane to control Herdr — split a pane, start another agent, prompt it,
+read its output. It's one markdown file, hand-installed and pinned to a
+specific upstream version, with a provenance note recording where it came from
+and how to check for drift. It does nothing outside a Herdr pane.
+
+One thing to know about it: agents you start through that skill get captured by
+session-minder like any other session, so they'll show up in `sm` as ordinary
+untitled rows. That's arguably correct — they really are resumable sessions —
+but it's a change you'll notice.
+
+Everything is committed. Nothing is pushed. The test suite is at 196, up from
+157, and every new test was checked by deliberately breaking the code to
+confirm the test noticed.
 
 ## What's unresolved?
 
-Nothing blocking. Four things are known and deliberately not fixed:
+Nothing blocking. The known-and-deliberately-unfixed list:
 
-- **`msgs` will always be empty.** No capture hook has ever sent a message count.
-  The column shows an em dash on every row and will until a hook sends one.
-- **Resuming a Hermes session that Hermes has already forgotten looks like it
-  worked.** The pane opens, prints "Session not found", and drops you into a new
-  session, while `sm` says "Opened a resumed pane." Glance at the pane before you
-  start typing. Nothing in the database can predict which Hermes ids are still
-  alive.
+- **The big one, and it's your call: should session end automatically write an
+  AI-generated summary of what happened?** Everything above is groundwork for
+  the original idea — asking a prompt "find Hermes sessions from last week
+  where we worked on xyz" and getting real candidates back. Harvested titles
+  get you part of the way. Generated summaries get you the rest. The reason
+  this isn't decided is The Beav: those are OSU contract and regulatory review
+  sessions, and auto-summarizing them puts work content into the database.
+  Probably fine — your machine, your network, single user — but it deserves a
+  deliberate yes rather than happening by default.
+- **Only Hermes can be harvested.** Claude Code and Kimi write no titles of
+  their own, so their sessions still depend on `/index-session`.
+- **The harvest dry run over-lists.** It shows 282 candidates when 37 will be
+  written, and says so plainly in its own output. It can't tell which Hermes
+  sessions were captured without a change to the API. `--apply` is exact, so
+  this is polish.
+- **`msgs` is always empty.** No capture hook has ever sent a message count.
+- **Resuming a Hermes session Hermes has forgotten looks like it worked.** The
+  pane opens, prints "Session not found", and drops you into a new session.
+  Glance at the pane before typing.
 - **A spawned pane can be sitting at a prompt** (Kimi's "Trust this folder?").
-  This cannot be detected — Herdr reports a stalled agent as ready and idle,
-  identical to a healthy one. That's why every spawn carries the caveat line.
-- **Two rapid-fire attaches in a row** can hit a pane before its shell is up. A
-  single attach right after succeeded, so it's a race under repetition.
-
-Two follow-ups from the original design are still parked: retiring the three
-markdown index files (they're dead but hold summaries predating the database —
-your call, no rush), and the Honcho curation sweep that would read from the
-sessions table. That one reads better now that titles exist.
+  Herdr reports a stalled agent as ready, so this can't be detected.
+- **You have a stale Herdr session directory** called `herdr-4-up` — note the
+  extra hyphen — sitting next to the real `herdr-4up`. Harmless now that the
+  service checks all servers, but it's leftover clutter from a typo.
 
 ## What's next?
 
-Nothing, deliberately. Use it for a week and name the sessions worth naming.
-That's the only way to learn whether 60 characters is the right title limit,
-whether splitting a label from a paragraph holds up in practice, or whether the
-noise thresholds need moving — `sm --all` is your window on that last one.
+**Use the names for a week before building anything else.** That's the whole
+reason for harvesting first: to find out whether title-grade text actually
+answers "where did we work on xyz" before committing to a summarization
+pipeline. Search the corpus and notice where it comes up empty — that tells
+you precisely what a generated summary would need to add, which is a far
+better specification than guessing at one now.
 
-Maintenance is two habits and nothing else. Push after any session that changes
-code; today's gap had grown to eight days and two entire phases living on one
-machine. And when Herdr updates, run the tests *and* do one real `sm` attach and
-look at the pane — a green suite has now twice failed to notice that Herdr
-changed underneath it.
+If you do decide to go ahead, the design is already worked out:
 
-If you find yourself doing more than that, it's the infrastructure reflex rather
-than the project asking for anything.
+- **Step 2** — add summary, keywords, and timestamp columns (never touching
+  `note`, which is yours), plus platform and date-range filters on the list.
+- **Step 3** — an out-of-band summarizer using `claude -p` under your
+  subscription rather than a metered API, then the skill that turns a
+  natural-language question into candidates in the thread.
+
+Two housekeeping items whenever you feel like it: push these three commits, and
+delete the stale `herdr-4-up` directory.
+
+And the standing maintenance rule, which earned itself again this week: when
+Herdr changes, run the tests *and* do one real `sm` attach and look at the
+pane. A green suite has now failed three times to notice that Herdr moved
+underneath it.
