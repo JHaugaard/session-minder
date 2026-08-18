@@ -24,6 +24,7 @@ interface TitlePayload {
   external_session_id: string;
   title: string;
   note?: string;
+  if_absent?: boolean;
 }
 
 export function registerTitleRoute(app: FastifyInstance): void {
@@ -71,6 +72,17 @@ export function registerTitleRoute(app: FastifyInstance): void {
 
       const note = typeof body.note === 'string' && body.note.trim() !== '' ? body.note : null;
 
+      // Bulk callers (the Hermes harvest) pass if_absent so a re-run tops up
+      // what is missing instead of flattening what John has since written.
+      // Rejected rather than coerced: `Boolean("false")` is true, and the
+      // caller most likely to send a string here is a shell script, where
+      // guessing wrong destroys curation rather than merely erroring.
+      if (body.if_absent !== undefined && typeof body.if_absent !== 'boolean') {
+        reply.code(400).send({ error: 'if_absent must be a boolean' });
+        return;
+      }
+      const ifAbsent: boolean = body.if_absent === true;
+
       const sql = getSql();
       // UPDATE, never upsert. A row that was never captured has no start time,
       // no project path and no duration — inventing one would put a ghost
@@ -86,15 +98,33 @@ export function registerTitleRoute(app: FastifyInstance): void {
             note = COALESCE(${note}, note)
         WHERE platform = ${platform}
           AND external_session_id = ${externalSessionId}
+          AND (NOT ${ifAbsent}::bool OR NULLIF(title, '') IS NULL)
         RETURNING id, title
       `;
 
       if (rows.length === 0) {
-        reply.code(404).send({ error: 'no session matches that platform and id' });
+        // Zero updated rows now has two causes and they need different
+        // answers: the session was never captured (404, as before), or it was
+        // captured and already carries a name that if_absent refused to
+        // overwrite (200, applied: false). Collapsing them would make a
+        // harvest report a 404 for every session already curated — which
+        // reads as capture being broken when it is working perfectly.
+        // Second query only on this path; the ordinary case stays one round trip.
+        const [existing] = await sql<{ id: string; title: string | null }[]>`
+          SELECT id, title
+          FROM _sessionminder.sessions
+          WHERE platform = ${platform}
+            AND external_session_id = ${externalSessionId}
+        `;
+        if (!existing) {
+          reply.code(404).send({ error: 'no session matches that platform and id' });
+          return;
+        }
+        reply.send({ id: existing.id, title: existing.title, applied: false });
         return;
       }
 
-      reply.send({ id: rows[0].id, title: rows[0].title });
+      reply.send({ id: rows[0].id, title: rows[0].title, applied: true });
     }
   );
 }

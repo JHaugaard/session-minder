@@ -163,6 +163,69 @@ export async function listSessions(
   return (await send(url, { method: 'GET' }, config.token)) as ListResponse;
 }
 
+export interface TitleRequest {
+  platform: 'claude_code' | 'hermes' | 'kimi_code';
+  external_session_id: string;
+  title: string;
+  note?: string;
+  // Never overwrite a title that is already there. Bulk callers pass true;
+  // /index-session, which exists to correct a name, does not.
+  if_absent?: boolean;
+}
+
+export interface TitleResponse {
+  id: string;
+  title: string | null;
+  applied: boolean;
+}
+
+export async function putTitle(
+  body: TitleRequest,
+  config: CliConfig = resolveConfig()
+): Promise<TitleResponse> {
+  const url = new URL('/api/sessions/title', config.baseUrl);
+  // A 404 here is routine for a bulk caller — Hermes remembers sessions we
+  // never captured — but it is still an ApiError, because this layer does not
+  // get to decide which failures a caller finds interesting.
+  return (await send(
+    url,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    config.token
+  )) as TitleResponse;
+}
+
+// Does the service on the other end actually implement the if_absent guard?
+//
+// This matters because the failure is silent. The service runs from source
+// under a systemd unit with no watcher, so a checkout that has if_absent and a
+// running process that predates it are the normal state after an edit. The old
+// route ignores unknown body keys: a bulk write would be accepted, report
+// success, and overwrite every hand-written title.
+//
+// Probes with a deliberately invalid if_absent against an id that cannot
+// exist. A service that validates the field answers 400; one that has never
+// heard of it falls through to the row lookup and answers 404. Nothing is
+// written either way — the title is rejected before any SQL on the new path,
+// and matches no row on the old one.
+export async function supportsIfAbsent(config: CliConfig = resolveConfig()): Promise<boolean> {
+  try {
+    await putTitle(
+      {
+        platform: 'hermes',
+        external_session_id: '__session_minder_capability_probe__',
+        title: 'probe',
+        if_absent: 'not-a-boolean' as unknown as boolean,
+      },
+      config
+    );
+    return false;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 400) return true;
+    if (err instanceof ApiError && err.status === 404) return false;
+    throw err;
+  }
+}
+
 export async function attachSession(
   id: string,
   config: CliConfig = resolveConfig()

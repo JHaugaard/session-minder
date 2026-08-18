@@ -56,6 +56,28 @@ that is not something we control or can predict.
 
 This is the second time a "confirmed live" Herdr fact has expired without a version bump.
 Treat every observed Herdr behavior as true-on-the-day-observed, not as a constant.
+
+**Hermes' session store is SQLite, and there is more than one database.** Observed
+2026-08-14. Sessions live in `~/.hermes/state.db` **plus one `state.db` per profile**
+under `~/.hermes/profiles/*/`. Of the 20 most recently captured Hermes sessions, 1 was in
+the root store and 18 were in `profiles/mccoy` — so reading only the root finds roughly 5%
+of the data while looking like it worked. Discovery must glob; never hardcode paths.
+
+`~/.hermes/sessions/*.json` still exists, still has exactly the shape you would want
+(`messages`, `message_count`, `model`, `session_id`), and is **months stale**. It is the
+first thing you will find and the wrong thing to read.
+
+Hermes also titles its own sessions — but its titler sometimes stores its own reasoning
+instead: `<think>` blocks and markdown headings in the `title` column. `src/cli/harvest.ts`
+filters these, along with `cron_`-prefixed scheduled runs (118 of 408 titles on disk).
+Same standing rule as Herdr: true-on-the-day-observed.
+
+**The service runs from source with no watcher, so an edit is not deployed.** The systemd
+unit is `tsx src/index.ts`, not `tsx watch`. After changing a route, the running process
+still serves the old code until `systemctl restart session-minder`. The old code silently
+ignores unknown request-body keys, so a new flag looks accepted and does nothing — which is
+how a guarded bulk write becomes an unguarded one. `supportsIfAbsent()` in `src/cli/api.ts`
+exists for exactly this and is the pattern to copy for any future write guard.
 </gotchas>
 
 <wiring>
