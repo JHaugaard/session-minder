@@ -100,7 +100,18 @@ If you do decide to go ahead, the design is already worked out:
 Two housekeeping items whenever you feel like it: push these three commits, and
 delete the stale `herdr-4-up` directory.
 
-And the standing maintenance rule, which earned itself again this week: when
-Herdr changes, run the tests *and* do one real `sm` attach and look at the
-pane. A green suite has now failed three times to notice that Herdr moved
-underneath it.
+One last thing, and it's a correction to the maintenance rule rather than a
+confirmation of it. The rule has been "when Herdr updates, run the tests *and*
+do one real `sm` attach and look at the pane." This week showed that trigger is
+wrong twice over. Neither failure involved a Herdr release: one was **Hermes**
+moving its session store, and the other was **your own machine drifting** —
+extra Herdr servers accumulating, no software updated at all. A check that
+fires on version bumps can never catch facts that expire without one.
+
+The instrument was wrong too. The service reported `herdr: ok` the entire time
+every live marker was false, because answering a ping proves a server is *up*,
+not that it's the *right* one.
+
+So the honest version: **periodically run one real `sm` attach and look at the
+pane — on a calendar, not on a release.** And treat any health signal that only
+proves "something answered" as no signal at all.
