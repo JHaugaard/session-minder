@@ -32,6 +32,20 @@ function isValidHerdrRef(value: unknown): value is HerdrCaptureRef {
   return HERDR_REF_FIELDS.every((f) => typeof v[f] === 'string');
 }
 
+// Claude Code exports its inbox-socket path into hook environments; the
+// start hook passes it through so the phone book records where a session's
+// peer messaging lives (agent-bridge Phase 0, 2026-08-22). Same shape rules
+// as HerdrCaptureRef: flat, all strings, one-liner validation.
+type ClaudeCaptureRef = {
+  messaging_socket: string;
+};
+
+function isValidClaudeRef(value: unknown): value is ClaudeCaptureRef {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.messaging_socket === 'string';
+}
+
 interface CapturePayload {
   platform: Platform;
   external_session_id: string;
@@ -40,6 +54,7 @@ interface CapturePayload {
   project_path?: string;
   message_count?: number;
   herdr?: HerdrCaptureRef;
+  claude?: ClaudeCaptureRef;
 }
 
 function isValidPayload(body: unknown): body is CapturePayload {
@@ -53,7 +68,8 @@ function isValidPayload(body: unknown): body is CapturePayload {
     (VALID_PLATFORMS as readonly string[]).includes(b.platform) &&
     (b.project_path === undefined || typeof b.project_path === 'string') &&
     (b.message_count === undefined || typeof b.message_count === 'number') &&
-    (b.herdr === undefined || isValidHerdrRef(b.herdr))
+    (b.herdr === undefined || isValidHerdrRef(b.herdr)) &&
+    (b.claude === undefined || isValidClaudeRef(b.claude))
   );
 }
 
@@ -72,7 +88,10 @@ export function registerCaptureRoute(app: FastifyInstance): void {
 
       // `{}` (not null) when absent: the column is NOT NULL, and jsonb `||`
       // with an empty object is a no-op, so both branches use one value.
-      const rawMetadata = body.herdr ? { herdr: body.herdr } : {};
+      const rawMetadata = {
+        ...(body.herdr ? { herdr: body.herdr } : {}),
+        ...(body.claude ? { claude: body.claude } : {}),
+      };
 
       if (body.event === 'start') {
         await sql`

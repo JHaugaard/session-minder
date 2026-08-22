@@ -52,11 +52,23 @@ if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_SOCKET_PATH:-}" ] && [ -n "${HERD
               pane_id: $pane_id, socket_path: $socket_path}}' 2>/dev/null)"
 fi
 
+# Inbox-socket capture (agent-bridge Phase 0). Claude Code exports the
+# session's peer-messaging socket path into hook environments; recording it
+# makes the phone book resolvable to a postable address in one query. Same
+# contract as the Herdr block: pure env read, absent var → object omitted.
+claude_json=""
+if [ -n "${CLAUDE_CODE_MESSAGING_SOCKET:-}" ]; then
+  claude_json="$(jq -n \
+    --arg messaging_socket "$CLAUDE_CODE_MESSAGING_SOCKET" \
+    '{claude: {messaging_socket: $messaging_socket}}' 2>/dev/null)"
+fi
+
 body="$(jq -n --arg sid "$session_id" --arg host "$host" --arg cwd "$cwd" \
   --argjson herdr "${herdr_json:-{\}}" \
+  --argjson claude "${claude_json:-{\}}" \
   '{platform: "claude_code", external_session_id: $sid, event: "start", host: $host}
    + (if $cwd == "" then {} else {project_path: $cwd} end)
-   + $herdr')"
+   + $herdr + $claude')"
 
 setsid curl -s -m 2 -X POST "${SESSION_MINDER_URL:-http://vps8-core:3000}/api/sessions/capture" \
   -H "Authorization: Bearer ${token}" \

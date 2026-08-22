@@ -95,7 +95,7 @@ describe('GET /api/sessions', () => {
     // The parameters carry the actual behavior: noise excluded, no text
     // filter, 15 rows. Asserting the text alone would survive a mutant that
     // keeps the clause and inverts the value.
-    expect(values).toEqual([false, null, null, null, null, 15]);
+    expect(values).toEqual([false, null, null, null, null, null, null, null, false, null, null, 15]);
     expect(res.json().noise_hidden).toBe(18);
   });
 
@@ -118,6 +118,53 @@ describe('GET /api/sessions', () => {
     // 1=1 --` is a live injection against John's own database.
     expect(text).not.toMatch(/jazz/);
     expect(values).toContain('%jazz%');
+  });
+
+  it('filters project as full path or basename, parameterized and LIKE-escaped', async () => {
+    mockSql.mockResolvedValueOnce([dbRow()]).mockResolvedValueOnce([{ count: 0 }]);
+
+    await get('?project=my_repo');
+
+    const { text, values } = call(0);
+    // Both forms in one clause: msg-claude-style resolvers pass a repo
+    // basename, humans may paste a full path. Dropping either arm silently
+    // returns zero rows for the other caller.
+    expect(text).toMatch(/project_path\s*=\s*\?/);
+    expect(text).toMatch(/project_path\s+LIKE\s+\?/i);
+    // Parameterized, never concatenated — same injection stance as q.
+    expect(text).not.toMatch(/my_repo/);
+    expect(values).toContain('my_repo');
+    // LIKE metacharacters escaped in the basename pattern: an unescaped `_`
+    // makes `my_repo` match `my-repo`, resolving a message to the wrong
+    // project's session.
+    expect(values).toContain('%/my\\_repo');
+  });
+
+  it('restricts to open sessions only when open=true', async () => {
+    mockSql.mockResolvedValueOnce([dbRow({ ended_at: null })]).mockResolvedValueOnce([{ count: 0 }]);
+
+    await get('?open=true');
+
+    const { text, values } = call(0);
+    // `ended_at IS NULL` means "no end event recorded" — the resolver's
+    // candidate set. Dropping the clause hands a message-delivery caller
+    // every ended session ordered by recency, and the newest ended row
+    // shadows the one actually running.
+    expect(text).toMatch(/ended_at\s+IS\s+NULL/i);
+    expect(values).toContain(true);
+  });
+
+  it('filters host as a parameter when host= is given', async () => {
+    mockSql.mockResolvedValueOnce([dbRow()]).mockResolvedValueOnce([{ count: 0 }]);
+
+    await get('?host=vps8-core');
+
+    const { text, values } = call(0);
+    // A socket path is only postable on the machine that owns it; without
+    // the host filter a resolver on vps8 can pick an mbp session's row.
+    expect(text).toMatch(/host\s*=\s*\?/);
+    expect(text).not.toMatch(/vps8-core/);
+    expect(values).toContain('vps8-core');
   });
 
   it('includes noise rows and reports zero hidden when noise=true', async () => {

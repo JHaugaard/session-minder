@@ -45,12 +45,21 @@ function iso(value: Date | string | null): string | null {
 }
 
 export function registerSessionsRoute(app: FastifyInstance): void {
-  app.get<{ Querystring: { q?: string; noise?: string; limit?: string } }>(
+  app.get<{
+    Querystring: {
+      q?: string;
+      noise?: string;
+      limit?: string;
+      project?: string;
+      open?: string;
+      host?: string;
+    };
+  }>(
     '/api/sessions',
     { preHandler: requireAuth },
     async (request) => {
       const sql = getSql();
-      const { q, noise, limit: rawLimit } = request.query;
+      const { q, noise, limit: rawLimit, project, open, host } = request.query;
 
       const includeNoise = noise === 'true';
       // NULL means "no text filter" — not "match everything". `'%'` would look
@@ -58,6 +67,19 @@ export function registerSessionsRoute(app: FastifyInstance): void {
       // `NULL ILIKE '%'` is NULL, not true.
       const pattern = q ? `%${q}%` : null;
       const limit = parseLimit(rawLimit);
+      // Phase 0 resolver filters (agent-bridge, 2026-08-22). `project` matches
+      // the full path or the repo basename; the basename form uses a '%/'
+      // suffix LIKE, with LIKE wildcards in the value escaped so a name like
+      // `my_repo` can't accidentally match `my-repo`. `open` means "no end
+      // event recorded" — candidates, not liveness truth (crashed sessions
+      // never send their end event; the socket connect is the truth test and
+      // it belongs to the caller).
+      const projectExact = project || null;
+      const projectBase = project
+        ? `%/${project.replace(/([%_\\])/g, '\\$1')}`
+        : null;
+      const openOnly = open === 'true';
+      const hostFilter = host || null;
 
       // ONE query shape, with every variation carried in parameters rather
       // than in conditionally-assembled SQL fragments. Two reasons, both
@@ -76,6 +98,11 @@ export function registerSessionsRoute(app: FastifyInstance): void {
                OR COALESCE(title, '') ILIKE ${pattern}
                OR COALESCE(project_path, '') ILIKE ${pattern}
                OR platform ILIKE ${pattern})
+          AND (${projectExact}::text IS NULL
+               OR project_path = ${projectExact}
+               OR project_path LIKE ${projectBase})
+          AND (NOT ${openOnly}::bool OR ended_at IS NULL)
+          AND (${hostFilter}::text IS NULL OR host = ${hostFilter})
         ORDER BY started_at DESC
         LIMIT ${limit}
       `;
@@ -95,6 +122,11 @@ export function registerSessionsRoute(app: FastifyInstance): void {
                  OR COALESCE(title, '') ILIKE ${pattern}
                  OR COALESCE(project_path, '') ILIKE ${pattern}
                  OR platform ILIKE ${pattern})
+            AND (${projectExact}::text IS NULL
+                 OR project_path = ${projectExact}
+                 OR project_path LIKE ${projectBase})
+            AND (NOT ${openOnly}::bool OR ended_at IS NULL)
+            AND (${hostFilter}::text IS NULL OR host = ${hostFilter})
         `;
         noiseHidden = counted?.count ?? 0;
       }

@@ -144,6 +144,38 @@ describe('POST /api/sessions/capture — start event', () => {
     });
   });
 
+  it('stores the messaging socket under raw_metadata.claude on start', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const app = buildServer();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions/capture',
+      headers: { authorization: 'Bearer test-token-123' },
+      payload: {
+        platform: 'claude_code',
+        external_session_id: 'abc-123',
+        event: 'start',
+        host: 'vps8-core',
+        project_path: '/home/john/dev/dev-meanderings',
+        claude: { messaging_socket: '/run/user/1001/cc-socks/12345.sock' },
+      },
+    });
+
+    expect(res.statusCode).toBe(204);
+
+    // Pins the nesting rule the same way the herdr test does: the socket
+    // must land under the `claude` KEY of raw_metadata. A resolver reading
+    // raw_metadata.claude.messaging_socket (agent-bridge Phase 0) depends on
+    // exactly this shape — a top-level messaging_socket would look stored
+    // and resolve to nothing.
+    const [, ...values] = mockSql.mock.calls[0];
+    const rawMetadata = values[values.length - 1];
+    expect(rawMetadata).toEqual({
+      claude: { messaging_socket: '/run/user/1001/cc-socks/12345.sock' },
+    });
+  });
+
   it('sends an empty object for raw_metadata when not in a Herdr pane', async () => {
     mockSql.mockResolvedValueOnce([]);
 
