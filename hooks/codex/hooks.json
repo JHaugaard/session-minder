@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|resume",
+      "hooks": [{
+        "type": "command",
+        "command": "python3 /home/john/dev/active/session-minder/hooks/codex/capture.py",
+        "timeout": 3
+      }]
+    }],
+    "SessionEnd": [{
+      "hooks": [{
+        "type": "command",
+        "command": "python3 /home/john/dev/active/session-minder/hooks/codex/capture.py",
+        "timeout": 3
+      }]
+    }]
+  }
+}

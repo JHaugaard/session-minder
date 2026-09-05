@@ -1,4 +1,5 @@
 // src/routes/attach.ts
+import { canResumeCodex } from '../codex.js';
 import type { FastifyInstance } from 'fastify';
 import { getSql } from '../db.js';
 import { localHost } from '../host.js';
@@ -137,6 +138,10 @@ export function registerAttachRoute(app: FastifyInstance): void {
       }
 
       if (plan.kind === 'spawn') {
+        if (session.platform === 'codex' && !canResumeCodex(session.external_session_id)) {
+          reply.send({ action: 'degraded', reason: 'codex_session_unavailable', command: null });
+          return;
+        }
         // Tracked so the catch below can clean up an orphaned tab — see B4.
         let tabId: string | undefined;
         try {

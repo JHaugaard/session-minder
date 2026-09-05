@@ -27,7 +27,7 @@ export class ApiError extends Error {
 
 export interface SessionSummary {
   id: string;
-  platform: 'claude_code' | 'hermes' | 'kimi_code';
+  platform: 'claude_code' | 'hermes' | 'kimi_code' | 'codex';
   title: string | null;
   project_path: string | null;
   host: string;
@@ -57,6 +57,7 @@ export type AttachResponse =
         | 'herdr_unreachable'
         | 'herdr_rejected'
         | 'foreign_host'
+        | 'codex_session_unavailable'
         | 'not_resumable_platform'
         | 'no_project_path';
       command: string | null;
@@ -164,7 +165,7 @@ export async function listSessions(
 }
 
 export interface TitleRequest {
-  platform: 'claude_code' | 'hermes' | 'kimi_code';
+  platform: 'claude_code' | 'hermes' | 'kimi_code' | 'codex';
   external_session_id: string;
   title: string;
   note?: string;

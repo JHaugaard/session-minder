@@ -2,9 +2,10 @@
 import type { FastifyInstance } from 'fastify';
 import { getSql } from '../db.js';
 import { requireAuth } from '../auth.js';
+import { CODEX_ID_RE } from '../codex-id.js';
 import { isNoise } from '../noise.js';
 
-const VALID_PLATFORMS = ['claude_code', 'hermes', 'kimi_code'] as const;
+const VALID_PLATFORMS = ['claude_code', 'hermes', 'kimi_code', 'codex'] as const;
 type Platform = (typeof VALID_PLATFORMS)[number];
 
 // Herdr exports these into every pane it owns; the hook scripts pass them
@@ -66,6 +67,8 @@ function isValidPayload(body: unknown): body is CapturePayload {
     (b.event === 'start' || b.event === 'end') &&
     typeof b.platform === 'string' &&
     (VALID_PLATFORMS as readonly string[]).includes(b.platform) &&
+    (b.platform !== 'codex' || (CODEX_ID_RE.test(b.external_session_id as string) &&
+      typeof b.project_path === 'string' && b.project_path.startsWith('/'))) &&
     (b.project_path === undefined || typeof b.project_path === 'string') &&
     (b.message_count === undefined || typeof b.message_count === 'number') &&
     (b.herdr === undefined || isValidHerdrRef(b.herdr)) &&
@@ -93,6 +96,23 @@ export function registerCaptureRoute(app: FastifyInstance): void {
         ...(body.claude ? { claude: body.claude } : {}),
       };
 
+      if (body.event === 'start' && body.platform === 'codex') {
+        // A Codex thread survives multiple TUI visits. Keep its original start
+        // but reopen it and refresh the location when it is resumed.
+        await sql`
+          INSERT INTO _sessionminder.sessions
+            (platform, external_session_id, host, project_path, started_at, raw_metadata)
+          VALUES (${body.platform}, ${body.external_session_id}, ${body.host},
+                  ${body.project_path ?? null}, now(), ${sql.json(rawMetadata)})
+          ON CONFLICT (platform, external_session_id) DO UPDATE
+          SET ended_at = NULL, noise_flag = false,
+              host = EXCLUDED.host, project_path = EXCLUDED.project_path,
+              raw_metadata = _sessionminder.sessions.raw_metadata || EXCLUDED.raw_metadata
+        `;
+        reply.code(204).send();
+        return;
+      }
+
       if (body.event === 'start') {
         await sql`
           INSERT INTO _sessionminder.sessions
@@ -102,6 +122,24 @@ export function registerCaptureRoute(app: FastifyInstance): void {
             (${body.platform}, ${body.external_session_id}, ${body.host},
              ${body.project_path ?? null}, now(), ${sql.json(rawMetadata)})
           ON CONFLICT (platform, external_session_id) DO NOTHING
+        `;
+        reply.code(204).send();
+        return;
+      }
+
+      if (body.event === 'end' && body.platform === 'codex') {
+        // A missed start still leaves a resumable row. Without a reliable
+        // message count, do not classify Codex's short visits as noise.
+        await sql`
+          INSERT INTO _sessionminder.sessions
+            (platform, external_session_id, host, project_path, started_at,
+             ended_at, raw_metadata)
+          VALUES (${body.platform}, ${body.external_session_id}, ${body.host},
+                  ${body.project_path ?? null}, now(), now(), ${sql.json(rawMetadata)})
+          ON CONFLICT (platform, external_session_id) DO UPDATE
+          SET ended_at = now(), host = EXCLUDED.host,
+              project_path = EXCLUDED.project_path,
+              raw_metadata = _sessionminder.sessions.raw_metadata || EXCLUDED.raw_metadata
         `;
         reply.code(204).send();
         return;

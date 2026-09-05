@@ -78,6 +78,9 @@ function render(r: AttachResponse, session: SessionSummary): string[] {
         r.command
       );
 
+    case 'codex_session_unavailable':
+      return ['The local Codex session is missing or unreadable; no new session was opened.'];
+
     case 'not_resumable_platform':
       // No command exists for this one, and withCommand's null branch is what
       // keeps a blank line from appearing where a copyable command would be.

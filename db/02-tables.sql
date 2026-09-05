@@ -6,7 +6,7 @@
 
 CREATE TABLE _sessionminder.sessions (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    platform            text NOT NULL CHECK (platform IN ('claude_code', 'hermes', 'kimi_code')),
+    platform            text NOT NULL CHECK (platform IN ('claude_code', 'hermes', 'kimi_code', 'codex')),
     external_session_id text NOT NULL,
     host                text NOT NULL,
     project_path        text,

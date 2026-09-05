@@ -246,6 +246,28 @@ describe('Herdr socket client', () => {
     expect(result.argv).toEqual(['claude', '--resume', 'abc']);
   });
 
+  it('retries only a Codex pre-launch busy rejection while a new shell starts', async () => {
+    let count = 0;
+    const { socketPath, received } = fakeHerdr(() => ++count === 1
+      ? { id: '1', error: { code: 'agent_pane_busy', message: 'shell not ready' } }
+      : { id: '1', result: { argv: ['codex', 'resume', 'the-id'] } });
+    const result = await createHerdrClient(socketPath).startAgent({
+      paneId: 'w9:p3', kind: 'codex', name: 'sm-test', args: ['resume', 'the-id'],
+    });
+    expect(received).toHaveLength(2);
+    expect(received[0].params).toEqual(received[1].params);
+    expect(result.argv).toEqual(['codex', 'resume', 'the-id']);
+  });
+
+  it('does not retry Codex launch rejections that could mean an agent already exists', async () => {
+    const { socketPath, received } = fakeHerdr(() => ({ id: '1',
+      error: { code: 'agent_name_taken', message: 'exists' } }));
+    await expect(createHerdrClient(socketPath).startAgent({
+      paneId: 'w9:p3', kind: 'codex', name: 'sm-test', args: ['resume', 'the-id'],
+    })).rejects.toMatchObject({ code: 'agent_name_taken' });
+    expect(received).toHaveLength(1);
+  });
+
   it('sends tab.close with the tab_id param', async () => {
     const { socketPath, received } = fakeHerdr(() => ({ id: '1', result: { type: 'ok' } }));
 

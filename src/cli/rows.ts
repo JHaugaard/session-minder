@@ -5,6 +5,7 @@
 import type { ListResponse, SessionSummary } from './api.js';
 
 const PLATFORM_LABEL: Record<string, string> = {
+  codex: 'codex',
   claude_code: 'claude',
   hermes: 'hermes',
   kimi_code: 'kimi',

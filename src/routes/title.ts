@@ -11,7 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import { getSql } from '../db.js';
 import { requireAuth } from '../auth.js';
 
-const VALID_PLATFORMS = ['claude_code', 'hermes', 'kimi_code'] as const;
+const VALID_PLATFORMS = ['claude_code', 'hermes', 'kimi_code', 'codex'] as const;
 
 // The picker renders one line and pads its columns to the widest cell, so an
 // unbounded title would blow up the layout for every other row. Rejected rather

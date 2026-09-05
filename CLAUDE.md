@@ -1,10 +1,10 @@
 # session-minder
 
-Single-user tool to track and access sessions across Claude Code, Hermes Agent, and Kimi Code.
+Single-user tool to track and access sessions across Claude Code, Hermes Agent, Kimi Code, and Codex.
 
 <intent>
-Objective: help a single user find, browse, and resume past sessions across Claude Code, Hermes Agent, and Kimi Code without needing to remember which tool or directory a session lived in.
-Outcomes: user can list/search sessions across all three tools from one place; user can jump back into a specific past session quickly.
+Objective: help a single user find, browse, and resume past sessions across Claude Code, Hermes Agent, Kimi Code, and Codex without needing to remember which tool or directory a session lived in.
+Outcomes: user can list/search sessions across all four tools from one place; user can jump back into a specific past session quickly.
 </intent>
 
 <stack>
@@ -81,6 +81,9 @@ exists for exactly this and is the pattern to copy for any future write guard.
 </gotchas>
 
 <wiring>
+**Codex integration:** see `docs/codex-integration.md` for lifecycle timing,
+global hook installation/trust, metadata-only naming, and live verification.
+
 **The repo is not the installation.** A clean `git clone` gives you a service that starts
 and captures nothing. Five things live outside this repo and are what actually make it
 work. Verified 2026-08-11.

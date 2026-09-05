@@ -4,7 +4,7 @@
 // plain objects.
 import type { HerdrPane } from './herdr.js';
 
-export type Platform = 'claude_code' | 'hermes' | 'kimi_code';
+export type Platform = 'claude_code' | 'hermes' | 'kimi_code' | 'codex';
 
 export interface SessionRow {
   id: string;
@@ -27,7 +27,8 @@ export type DegradeReason =
   | 'herdr_unreachable'
   | 'herdr_rejected'
   | 'foreign_host'
-  | 'not_resumable_platform'
+  | 'codex_session_unavailable'
+        | 'not_resumable_platform'
   | 'no_project_path';
 
 export type AttachPlan =
@@ -50,6 +51,11 @@ interface ResumeSpec {
 }
 
 const RESUME: Record<Platform, ResumeSpec> = {
+  codex: {
+    agentKind: 'codex',
+    args: (id) => ['resume', id],
+    command: (id) => `codex resume ${id}`,
+  },
   claude_code: {
     agentKind: 'claude',
     args: (id) => ['--resume', id],

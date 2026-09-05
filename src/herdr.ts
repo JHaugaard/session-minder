@@ -7,6 +7,7 @@ import net from 'node:net';
 import { access, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // Exported so tests can assert against the real values instead of
 // hand-copied literals that can drift silently out of sync.
@@ -185,23 +186,36 @@ export function createHerdrClient(socketPath: string): HerdrClient {
       return { paneId, tabId };
     },
     async startAgent({ paneId, kind, name, args }) {
-      const result = await request(
-        socketPath,
-        'agent.start',
-        {
-          pane_id: paneId,
-          kind,
-          name,
-          args,
-          // Herdr's own readiness timeout must fire BEFORE our socket gives
-          // up (AGENT_START_TIMEOUT_MS above) — that way a genuinely slow
-          // agent produces a real Herdr error message instead of our opaque
-          // "agent.start timed out".
-          timeout_ms: 12000,
-        },
-        AGENT_START_TIMEOUT_MS
-      );
-      return { argv: (result.argv ?? []) as string[] };
+      // A newly created tab can precede its shell prompt. Observed live for
+      // Codex on 2026-09-05: agent.start rejected that brief interval as busy.
+      // Retry only this pre-launch rejection, never a timeout or unknown error
+      // that might have occurred after starting an agent.
+      const deadline = Date.now() + 3000;
+      for (;;) {
+        try {
+          const result = await request(
+            socketPath,
+            'agent.start',
+            {
+              pane_id: paneId,
+              kind,
+              name,
+              args,
+              // Herdr's own readiness timeout must fire BEFORE our socket gives
+              // up (AGENT_START_TIMEOUT_MS above) — that way a genuinely slow
+              // agent produces a real Herdr error message instead of our opaque
+              // "agent.start timed out".
+              timeout_ms: 12000,
+            },
+            AGENT_START_TIMEOUT_MS
+          );
+          return { argv: (result.argv ?? []) as string[] };
+        } catch (err) {
+          if (kind !== 'codex' || !(err instanceof HerdrRejectedError) ||
+              err.code !== 'agent_pane_busy' || Date.now() >= deadline) throw err;
+          await delay(150);
+        }
+      }
     },
     async closeTab(tabId) {
       // Verified live: `herdr tab close <tab_id>` returns `{"result":{"type":"ok"}}`.
